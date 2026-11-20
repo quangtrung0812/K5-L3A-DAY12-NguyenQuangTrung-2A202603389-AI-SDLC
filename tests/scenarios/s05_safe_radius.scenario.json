@@ -4,6 +4,6 @@
   "random_shades": false,
   "motes": [],
   "lanterns": [{ "id": "L1", "pos": [0, 0, 0], "lit": true }],
-  "shades": [{ "id": "S1", "pos": [12, 0, 0] }],
-  "time_left_s": 240
+  "shades": [{ "id": "S1", "pos": [10, 0, 0], "state": "chase" }],
+  "time_left_s": 300
 }

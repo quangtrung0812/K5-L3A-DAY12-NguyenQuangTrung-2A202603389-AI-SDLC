@@ -1,8 +1,8 @@
 {
-  "player": { "pos": [0, 0, 0], "carried": 2, "flames": 3 },
+  "player": { "pos": [0, 0, 0], "carried": 4, "flames": 3 },
   "random_motes": false,
   "random_shades": false,
   "motes": [],
-  "shades": [{ "id": "S1", "pos": [5, 0, 0] }],
-  "time_left_s": 240
+  "shades": [{ "id": "S1", "pos": [4.5, 0, 0], "state": "chase" }],
+  "time_left_s": 300
 }
