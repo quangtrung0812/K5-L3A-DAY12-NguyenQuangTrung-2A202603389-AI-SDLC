@@ -2,7 +2,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { createDefaultInput, LanternIslandSim } from '../sim/engine.js';
-import type { InputsFile, InputState, ScenarioConfig } from '../sim/types.js';
+import type { InputsFile, InputState, NightNumber, ScenarioConfig } from '../sim/types.js';
 import {
   ContractFormatError,
   validateInputsFile,
@@ -11,7 +11,7 @@ import {
 
 interface CliArgs {
   seed: number;
-  night: number;
+  night: NightNumber;
   ticks: number;
   out: string;
   snapshotEvery: number;
@@ -73,7 +73,9 @@ function parseCliArgs(argv: string[]): CliArgs {
 
   if (seed === undefined) throw new Error('Missing required argument: --seed');
   if (night === undefined) throw new Error('Missing required argument: --night');
-  if (night !== 1) throw new Error(`Unsupported --night value: ${night} (Phase 1 supports night 1)`);
+  if (night !== 1 && night !== 2 && night !== 3) {
+    throw new Error(`Unsupported --night value: ${night} (Contract v1.1 supports 1, 2, 3)`);
+  }
   if (ticks === undefined || ticks < 0) {
     throw new Error('Missing or invalid required argument: --ticks (must be >= 0)');
   }
@@ -145,7 +147,6 @@ function main(): void {
     });
 
     const lines: string[] = [];
-    // Snapshot tick 0: state after scenario setup, before any input
     lines.push(JSON.stringify(sim.getSnapshot()));
 
     const currentInput: InputState = createDefaultInput();
@@ -160,6 +161,8 @@ function main(): void {
         if (frame.jump !== undefined) currentInput.jump = frame.jump;
         if (frame.interact !== undefined) currentInput.interact = frame.interact;
         if (frame.pulse !== undefined) currentInput.pulse = frame.pulse;
+        if (frame.dash !== undefined) currentInput.dash = frame.dash;
+        if (frame.pause !== undefined) currentInput.pause = frame.pause;
         frameIdx += 1;
       }
 
@@ -172,7 +175,7 @@ function main(): void {
         lines.push(JSON.stringify(sim.getSnapshot()));
       }
 
-      if (sim.state !== 'playing') {
+      if (sim.state === 'won' || sim.state === 'lost') {
         break;
       }
     }
