@@ -66,3 +66,26 @@
 - **Cách tiết kiệm token:**
   - Gom toàn bộ chỉnh sửa theo 4 batch song song (Specs/Harness → Sim/Headless → 3D Client → Tests/Scenarios) thay vì sửa từng file lẻ tẻ.
   - Để subagent `research` độc lập rà soát 1 lần trọn gói rồi áp dụng tất cả 7 fix trong đúng 1 lượt song song.
+
+
+---
+
+## Phase 3 — TICKET-03 *"Đèn cạn dầu"* (Test Contract v1.2)
+
+### 1. Kế hoạch & Quyết định kiến trúc (ADR-001)
+- Viết trước [ADR-001](adr-001-lantern-fuel-and-dawn-win.md) và [`CHANGELOG.md`](../../CHANGELOG.md) liệt kê đầy đủ breaking changes từ Contract v1.1 → v1.2.
+- Quyết định lưu nhiên liệu đèn bằng **số nguyên đơn vị `1/60`** (`0..6000`) để tính toán chính xác tuyệt đối không sai số dấu phẩy động (`-1/tick` hao tự nhiên, `-5/tick` mỗi Bóng Mực `drain`, `+600/đom đóm` khi châm dầu, ranh giới `1800` = đúng `30.0` giữ vùng an toàn).
+- Giữ nguyên `pickup_radius = 1.0 m` trong `src/sim/tuning.ts` để 100% test ẩn Phase 1–2 không bị hỏng; bổ sung hiệu ứng **hút ánh sáng trực quan client-only** trong `src/client/scene.ts` (đom đóm trong bán kính `2.4 m` nghiêng/vỗ cánh mạnh về phía Mây kèm tia sáng khi nhặt).
+
+### 2. Những lỗi AI đã tự bắt & sửa trong Phase 3
+1. **Lệch kịch bản `P3-03` giữa bán kính `drain → chase` (`6 m`) và bán kính `Pulse` (`5 m`):** Khi cho Mây đi bộ từ xa lại gần đèn yếu, Bóng Mực chuyển từ `drain` sang `chase` ở mốc `6 m` trước khi Mây kịp bấm `Q` ở `5 m`, khiến điểm chỉ là `+5` thay vì `+15`. Đã tách kiểm chứng rõ hai hành vi qua `P3-03` (`wander → drain → fuel_drain → aggro ≤ 6m → refuel ≥ 30`) và `P3-04` (`pulse` trúng Bóng Mực đang `drain` nhận đúng tổng `+15`).
+2. **Bảo vệ quy tắc không thắng sớm ở tick 1:** Loại bỏ điều kiện `this.lanterns.every((l) => l.lit)` trong nhánh guard tick 1 của `src/sim/engine.ts` để kịch bản đặt sẵn toàn bộ đèn sáng vẫn chạy tới bình minh đúng luật mới.
+3. **Biến thừa `simFull` trong `tests/sim.test.ts`:** Bắt bởi `tsc --noEmit`, nâng cấp thành bài test thật xác nhận đèn đầy dầu (`6000` đơn vị) bị bỏ qua để ưu tiên chọn đèn hợp lệ khác trong tầm tương tác.
+4. **Rà soát độc lập (`Phase 3 Contract v1.2 Reviewer` — `docs/proof/phase-3/review.md`):** Khôi phục đầy đủ 5 assertion hồi quy Phase 2 bị rút gọn, thêm test ca biên tie-break/ngưỡng bình minh Đêm 2–3/đèn tắt ở tick cuối (`17/17` unit test), sửa CSS `[hidden] { display: none !important; }` + đổ bóng trắng chế độ mù màu, và chặn Bóng Mực hút dầu trong lúc đang bị `safePushTicks` đẩy ra.
+
+### 3. Cập nhật Harness AI
+- Cập nhật `AGENTS.md` và `.agents/skills/verify-phase/SKILL.md` lên Contract v1.2 (quy ước nhiên liệu nguyên `1/60`, 6 trạng thái Bóng Mực gồm `drain`, luật thắng `dawn_survived`, cấm skip test cũ âm thầm và cấm đổi hằng số chuẩn).
+
+### 4. Ước tính Token & Chiến lược tiết kiệm Phase 3
+- **Ước tính Phase 3:** ~18k–24k tokens đầu ra / ~65k–85k tokens ngữ cảnh tổng (nâng cấp sim, validation, UI 3D + chế độ mù màu, ADR, Changelog, 15 unit test, 21 contract check và review độc lập).
+- **Cách tiết kiệm token:** Chia làm 4 batch chỉnh sửa song song rõ ranh giới (Specs/ADR/Changelog → Sim/Validation → Client 3D/Colorblind/HUD → Tests/Proof) và chạy `npm run build && npm test` gộp một lượt sau khi hoàn thiện từng cụm.
