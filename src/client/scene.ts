@@ -115,13 +115,34 @@ export class LanternIslandRenderer {
   private runCycle = 0;
   private elapsed = 0;
   private colorblind = false;
+  private reducedMotion = false;
+  private cameraShake = 0;
+  private readonly benchMode: boolean;
 
-  constructor(container: HTMLElement) {
-    this.renderer = new THREE.WebGLRenderer({ antialias: true });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
+  // Lightweight instanced meshes used exclusively in standardized Phase 4 Benchmark Scene (zero creative extras)
+  private benchShadeBodies: THREE.InstancedMesh | null = null;
+  private benchShadeRings: THREE.InstancedMesh | null = null;
+  private benchMotes: THREE.InstancedMesh | null = null;
+  private benchDummy = new THREE.Object3D();
+
+  constructor(
+    container: HTMLElement,
+    options?: { benchMode?: boolean; preserveDrawingBuffer?: boolean },
+  ) {
+    this.benchMode = options?.benchMode ?? false;
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      powerPreference: 'high-performance',
+      preserveDrawingBuffer: options?.preserveDrawingBuffer ?? false,
+    });
+    this.renderer.setPixelRatio(this.benchMode ? 1 : Math.min(window.devicePixelRatio, 1.75));
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    if (this.benchMode) {
+      this.renderer.shadowMap.autoUpdate = false;
+      this.renderer.shadowMap.needsUpdate = true;
+    }
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.15;
     container.appendChild(this.renderer.domElement);
@@ -164,7 +185,7 @@ export class LanternIslandRenderer {
     this.buildSkyAndSeaOfClouds();
     this.buildWindLeaves();
 
-    const rig = this.buildPlayerMay();
+    const rig = this.benchMode ? this.buildStandardBenchPlayer() : this.buildPlayerMay();
     this.playerGroup = rig.group;
     this.playerBody = rig.body;
     this.playerHatFlapLeft = rig.hatFlapLeft;
@@ -179,6 +200,10 @@ export class LanternIslandRenderer {
     this.dashAura = rig.dashAura;
     this.compassArrow = rig.compassArrow;
     this.scene.add(this.playerGroup);
+
+    if (this.benchMode) {
+      this.initBenchInstancedPools();
+    }
   }
 
   resize(width: number, height: number): void {
@@ -207,6 +232,247 @@ export class LanternIslandRenderer {
 
   setColorblind(enabled: boolean): void {
     this.colorblind = enabled;
+  }
+
+  setReducedMotion(enabled: boolean): void {
+    this.reducedMotion = enabled;
+    if (enabled) {
+      this.cameraShake = 0;
+      if (this.camera.fov !== 54) {
+        this.camera.fov = 54;
+        this.camera.updateProjectionMatrix();
+      }
+    }
+  }
+
+  triggerCameraShake(intensity: number): void {
+    if (this.reducedMotion) return;
+    this.cameraShake = Math.max(this.cameraShake, intensity);
+  }
+
+  getRendererDescription(): string {
+    const gl = this.renderer.getContext();
+    let gpu = 'WebGL2';
+    try {
+      const ext = gl.getExtension('WEBGL_debug_renderer_info');
+      if (ext) {
+        const unmasked = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL);
+        if (typeof unmasked === 'string' && unmasked.length > 0) gpu = unmasked;
+      }
+    } catch {
+      // ignore GPU query failures
+    }
+    return `Three.js 0.174.0 (${gpu})`;
+  }
+
+  captureScreenshotDataUrl(): string {
+    return this.renderer.domElement.toDataURL('image/png');
+  }
+
+  /** Projects any 3D world point onto screen edge when outside viewport (used for Shade spawn indicator). */
+  getOffscreenPointIndicator(
+    worldVec: [number, number, number],
+    label: string,
+    viewportW: number,
+    viewportH: number,
+  ): { visible: boolean; x: number; y: number; angleDeg: number; label: string } {
+    const worldPos = new THREE.Vector3(worldVec[0], worldVec[1] + 1.2, worldVec[2]);
+    const ndc = worldPos.clone().project(this.camera);
+    const onScreen =
+      ndc.z < 1 && ndc.x >= -0.92 && ndc.x <= 0.92 && ndc.y >= -0.88 && ndc.y <= 0.88;
+    if (onScreen) {
+      return { visible: false, x: 0, y: 0, angleDeg: 0, label: '' };
+    }
+    let dx = ndc.x;
+    let dy = -ndc.y;
+    if (ndc.z > 1) {
+      dx = -dx;
+      dy = -dy;
+    }
+    const angleRad = Math.atan2(dy, dx);
+    const padX = viewportW * 0.44;
+    const padY = viewportH * 0.4;
+    const cosA = Math.cos(angleRad);
+    const sinA = Math.sin(angleRad);
+    const scale = Math.min(
+      Math.abs(cosA) > 1e-4 ? padX / Math.abs(cosA) : Infinity,
+      Math.abs(sinA) > 1e-4 ? padY / Math.abs(sinA) : Infinity,
+    );
+    return {
+      visible: true,
+      x: viewportW / 2 + cosA * scale,
+      y: viewportH / 2 + sinA * scale,
+      angleDeg: (angleRad * 180) / Math.PI + 90,
+      label,
+    };
+  }
+
+  /** Standardized Phase 4 Benchmark render loop (Contract v1.3): 200 instanced Shades, 100 Motes, 30m Y=15m CCW 15s orbit. */
+  syncBench(sim: LanternIslandSim, benchElapsedS: number, dt: number): void {
+    if (this.currentMapNight !== sim.night) {
+      this.resetForNight(sim.night);
+    }
+    this.elapsed += dt;
+
+    // Initialize static benchmark scene lighting, Mây, and 5 standard lanterns once (zero per-frame string/array allocs)
+    if (this.lanternVisuals.size === 0) {
+      let litCount = 0;
+      for (let i = 0; i < sim.lanterns.length; i++) {
+        if (sim.lanterns[i].lit) litCount += 1;
+      }
+      const progress = litCount / Math.max(1, sim.lanterns.length);
+      this.ambientLight.intensity = 0.15 + 0.55 * progress;
+      this.fog.density = 0.0085 - progress * 0.0032;
+
+      // Mây stationary at (0,0,0)
+      this.playerGroup.visible = true;
+      this.playerGroup.position.set(0, 0, 0);
+      this.compassArrow.visible = false;
+
+      // 5 standard lanterns (L1..L3 lit fuel 100, L4..L5 unlit)
+      for (const lantern of sim.lanterns) {
+        const vis = this.createLanternVisual();
+        this.lanternVisuals.set(lantern.id, vis);
+        this.scene.add(vis.group);
+        vis.group.position.set(lantern.pos[0], lantern.pos[1], lantern.pos[2]);
+        if (lantern.lit) {
+          vis.bulb.scale.set(1.0, 1.12, 1.0);
+          vis.tearGroup.visible = false;
+          vis.bulbMat.color.set(PALETTE.lanternCore);
+          vis.bulbMat.emissive.set(PALETTE.lanternLit);
+          vis.bulbMat.emissiveIntensity = 2.6;
+          vis.light.intensity = 20;
+          vis.safeRing.visible = true;
+          vis.fuelBarGroup.visible = false;
+        } else {
+          vis.bulb.scale.set(1.06, 0.8, 1.06);
+          vis.tearGroup.visible = true;
+          vis.bulbMat.color.set(PALETTE.lanternUnlit);
+          vis.bulbMat.emissiveIntensity = 0;
+          vis.light.intensity = 0;
+          vis.safeRing.visible = false;
+          vis.fuelBarGroup.visible = false;
+        }
+      }
+      // Bake shadow map once now that map, stationary Mây, and 5 lanterns are placed
+      this.renderer.shadowMap.needsUpdate = true;
+    }
+
+    // Update 200 instanced Shades
+    if (this.benchShadeBodies && this.benchShadeRings) {
+      const count = Math.min(200, sim.shades.length);
+      this.benchShadeBodies.count = count;
+      this.benchShadeRings.count = count;
+      for (let i = 0; i < count; i++) {
+        const s = sim.shades[i];
+        const hoverY = s.pos[1] + 0.85 + Math.sin(this.elapsed * 3.5 + i * 0.37) * 0.1;
+        this.benchDummy.position.set(s.pos[0], hoverY, s.pos[2]);
+        this.benchDummy.rotation.set(0, 0, 0);
+        this.benchDummy.scale.set(1, 1, 1);
+        this.benchDummy.updateMatrix();
+        this.benchShadeBodies.setMatrixAt(i, this.benchDummy.matrix);
+
+        this.benchDummy.position.set(s.pos[0], hoverY + 0.15, s.pos[2]);
+        this.benchDummy.rotation.set(Math.PI / 2, 0, this.elapsed * 2 + i);
+        this.benchDummy.updateMatrix();
+        this.benchShadeRings.setMatrixAt(i, this.benchDummy.matrix);
+      }
+      this.benchShadeBodies.instanceMatrix.needsUpdate = true;
+      this.benchShadeRings.instanceMatrix.needsUpdate = true;
+    }
+
+    // Update 100 instanced Motes
+    if (this.benchMotes) {
+      const count = Math.min(100, sim.motes.length);
+      this.benchMotes.count = count;
+      for (let i = 0; i < count; i++) {
+        const m = sim.motes[i];
+        const bobY = m.pos[1] + 0.8 + Math.sin(this.elapsed * 4.0 + i * 0.5) * 0.2;
+        this.benchDummy.position.set(m.pos[0], bobY, m.pos[2]);
+        this.benchDummy.rotation.set(0, 0, 0);
+        this.benchDummy.scale.set(1, 1, 1);
+        this.benchDummy.updateMatrix();
+        this.benchMotes.setMatrixAt(i, this.benchDummy.matrix);
+      }
+      this.benchMotes.instanceMatrix.needsUpdate = true;
+    }
+
+    // Orbit camera: center (0,0,0), radius 30m, Y=15m, start angle 0° (30,15,0), CCW from above, 15s per rev
+    const angle = (benchElapsedS / 15) * Math.PI * 2;
+    this.camera.position.set(Math.cos(angle) * 30, 15, -Math.sin(angle) * 30);
+    this.camera.lookAt(0, 0, 0);
+
+    for (const c of this.cloudPuffs) {
+      c.angle += c.speed * dt;
+      c.mesh.position.set(Math.cos(c.angle) * c.radius, c.y, Math.sin(c.angle) * c.radius);
+    }
+
+    this.renderer.render(this.scene, this.camera);
+  }
+
+  private initBenchInstancedPools(): void {
+    const shadeGeom = new THREE.SphereGeometry(0.58, 10, 8);
+    const shadeMat = new THREE.MeshStandardMaterial({
+      color: PALETTE.shadeBody,
+      emissive: PALETTE.shadeEdge,
+      emissiveIntensity: 0.65,
+      roughness: 0.6,
+    });
+    this.benchShadeBodies = new THREE.InstancedMesh(shadeGeom, shadeMat, 200);
+    this.benchShadeBodies.castShadow = false;
+    this.benchShadeBodies.frustumCulled = false;
+    this.scene.add(this.benchShadeBodies);
+
+    const ringGeom = new THREE.TorusGeometry(0.62, 0.055, 6, 12);
+    const ringMat = new THREE.MeshBasicMaterial({ color: PALETTE.shadeEdge });
+    this.benchShadeRings = new THREE.InstancedMesh(ringGeom, ringMat, 200);
+    this.benchShadeRings.frustumCulled = false;
+    this.scene.add(this.benchShadeRings);
+
+    const moteGeom = new THREE.SphereGeometry(0.24, 8, 8);
+    const moteMat = new THREE.MeshBasicMaterial({ color: PALETTE.moteCore });
+    this.benchMotes = new THREE.InstancedMesh(moteGeom, moteMat, 100);
+    this.benchMotes.frustumCulled = false;
+    this.scene.add(this.benchMotes);
+  }
+
+  private buildStandardBenchPlayer() {
+    const group = new THREE.Group();
+    const body = new THREE.Group();
+    group.add(body);
+    const cloak = new THREE.Mesh(
+      new THREE.ConeGeometry(0.45, 1.25, 12),
+      new THREE.MeshStandardMaterial({ color: PALETTE.mayCloak, roughness: 0.7 }),
+    );
+    cloak.position.y = 0.65;
+    body.add(cloak);
+    const head = new THREE.Mesh(
+      new THREE.SphereGeometry(0.32, 12, 12),
+      new THREE.MeshStandardMaterial({ color: '#fce8dc', roughness: 0.7 }),
+    );
+    head.position.y = 1.45;
+    body.add(head);
+    const light = new THREE.PointLight(PALETTE.lanternLit, 2.2, 14, 1.5);
+    light.position.set(0.3, 1.1, 0.3);
+    body.add(light);
+    const empty = () => new THREE.Group();
+    const hiddenMesh = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.01, 0.01));
+    hiddenMesh.visible = false;
+    return {
+      group,
+      body,
+      hatFlapLeft: empty(),
+      hatFlapRight: empty(),
+      swordGroup: empty(),
+      footLeft: empty(),
+      footRight: empty(),
+      capeFlow: empty(),
+      hangingLantern: empty(),
+      light,
+      invulnShell: hiddenMesh,
+      dashAura: hiddenMesh.clone(),
+      compassArrow: empty(),
+    };
   }
 
   triggerPickupSparkle(pos: [number, number, number]): void {
@@ -325,13 +591,14 @@ export class LanternIslandRenderer {
     this.playerGroup.position.set(sim.player.pos[0], sim.player.pos[1], sim.player.pos[2]);
     this.playerBody.rotation.y = sim.player.yawRad;
 
-    // Gentle chibi hop bob & forward momentum lean
-    const hopBob =
-      isMoving && sim.player.grounded
+    // Gentle chibi hop bob & forward momentum lean (disabled when Reduced Motion is active)
+    const hopBob = this.reducedMotion
+      ? 0
+      : isMoving && sim.player.grounded
         ? Math.abs(Math.sin(this.runCycle)) * 0.12
         : Math.sin(this.elapsed * 2.6) * 0.025;
     this.playerBody.position.y = hopBob;
-    const targetLean = isDashing ? 0.3 : isMoving ? 0.12 : 0;
+    const targetLean = this.reducedMotion ? 0 : isDashing ? 0.3 : isMoving ? 0.12 : 0;
     this.playerBody.rotation.x += (targetLean - this.playerBody.rotation.x) * Math.min(1, dt * 14);
 
     // Swaying kasa hat armored side plates & billowing haori coat / long lavender hair
@@ -374,8 +641,16 @@ export class LanternIslandRenderer {
       this.dashAura.rotation.y = this.elapsed * 9;
     }
 
-    // Dynamic camera FOV boost while running/dashing for snappier speed feel (no sim speed change)
-    const targetFov = isDashing ? 67 : sim.player.charmTicks > 0 && isMoving ? 63 : isMoving ? 59 : 54;
+    // Dynamic camera FOV boost while running/dashing (disabled when Reduced Motion is active)
+    const targetFov = this.reducedMotion
+      ? 54
+      : isDashing
+        ? 67
+        : sim.player.charmTicks > 0 && isMoving
+          ? 63
+          : isMoving
+            ? 59
+            : 54;
     if (Math.abs(this.camera.fov - targetFov) > 0.05) {
       this.camera.fov += (targetFov - this.camera.fov) * Math.min(1, dt * 8);
       this.camera.updateProjectionMatrix();
@@ -422,6 +697,13 @@ export class LanternIslandRenderer {
       lookZ - Math.cos(theta) * horizDist,
     );
     this.camera.position.lerp(targetCamPos, Math.min(1, dt * 15));
+    if (this.cameraShake > 0.005 && !this.reducedMotion) {
+      this.camera.position.x += Math.sin(this.elapsed * 62) * this.cameraShake;
+      this.camera.position.y += Math.cos(this.elapsed * 54) * this.cameraShake * 0.7;
+      this.cameraShake = Math.max(0, this.cameraShake - dt * 1.4);
+    } else {
+      this.cameraShake = 0;
+    }
     this.camera.lookAt(lookX, lookY + focusY, lookZ);
 
     // 4. Lanterns (Phase 3: 20% squashed + torn paper when unlit; floating fuel bar + 1Hz blink when fuel < 30)

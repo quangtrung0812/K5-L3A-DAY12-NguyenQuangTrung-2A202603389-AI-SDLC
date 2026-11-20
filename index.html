@@ -4,21 +4,28 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Đảo Đèn Lồng — Ba Hòn Đảo</title>
+  <title>Đảo Đèn Lồng — Phát hành v1.0.0</title>
 </head>
 
 <body>
   <main id="game-shell" aria-label="Khu vực chơi game Đảo Đèn Lồng">
     <div id="canvas-root"></div>
+    <div id="screen-flash" class="screen-flash" aria-hidden="true"></div>
 
-    <!-- Off-screen directional arrow toward nearest unlit lantern -->
+    <!-- Off-screen directional arrow toward nearest urgent/unlit lantern -->
     <div id="offscreen-arrow" class="offscreen-arrow" hidden aria-hidden="true">
       <span class="arrow-head">▲</span>
       <span id="offscreen-arrow-label" class="arrow-dist">L1</span>
     </div>
 
-    <!-- Standardized HUD Layout -->
-    <header class="hud-top" aria-label="Thông số màn chơi">
+    <!-- Off-screen directional arrow when a Shade spawns (Accessibility Phase 4) -->
+    <div id="shade-spawn-arrow" class="offscreen-arrow shade-arrow" hidden aria-hidden="true">
+      <span class="arrow-head">▲</span>
+      <span id="shade-spawn-arrow-label" class="arrow-dist">⚠ Bóng Mực</span>
+    </div>
+
+    <!-- Standardized HUD Layout (min 18px UI text at 1280x720) -->
+    <header id="hud-top" class="hud-top" aria-label="Thông số màn chơi">
       <!-- Top-left: Flames + Night & Status -->
       <div class="hud-left">
         <div class="hud-pill flames-pill" aria-label="Ngọn lửa sinh mệnh">
@@ -29,14 +36,14 @@
           Bùa Gió: <span id="hud-charm-time">10.0s</span>
         </div>
         <div id="hud-wind-badge" class="status-badge wind-badge" hidden>
-          Gió mạnh sắp tới!
+          ⚠ Gió mạnh sắp tới!
         </div>
         <div id="hud-lowfuel-badge" class="status-badge lowfuel-badge" hidden>
           ⚠ Đèn yếu dầu!
         </div>
       </div>
 
-      <!-- Top-center: Clock mm:ss (red & blinking <= 30s) -->
+      <!-- Top-center: Clock mm:ss (warning <= 30s) -->
       <div class="hud-center">
         <div id="hud-clock-box" class="hud-clock" aria-label="Thời gian còn lại">
           <span class="pill-label">Bình minh</span>
@@ -46,39 +53,39 @@
 
       <!-- Top-right: Lanterns k/n + Score + Pause -->
       <div class="hud-right">
-        <div class="hud-pill" aria-label="Đèn lồng đã thắp">
-          <span class="pill-label">Đèn thắp</span>
-          <span id="hud-lanterns" class="pill-value gold-text">0 / 5</span>
+        <div class="hud-pill" aria-label="Đèn lồng đang sáng">
+          <span class="pill-label">Đèn sáng</span>
+          <span id="hud-lanterns" class="pill-value gold-text">0 / 5 (cần 3)</span>
         </div>
         <div class="hud-pill" aria-label="Điểm số">
           <span class="pill-label">Điểm</span>
           <span id="hud-score" class="pill-value gold-text">0</span>
         </div>
         <button id="btn-pause-hud" type="button" class="hud-btn" aria-label="Tạm dừng">
-          Tạm dừng (P)
+          Tạm dừng (<span id="lbl-key-pause">P</span>)
         </button>
       </div>
     </header>
 
+    <div id="hud-subtitle" class="hud-subtitle" role="status" aria-live="assertive" hidden></div>
     <div id="hud-prompt" class="hud-prompt" hidden></div>
     <div id="hud-live" class="hud-toast" role="status" aria-live="polite"></div>
 
-    <footer class="hud-bottom" aria-label="Thanh đom đóm và hồi chiêu kỹ năng">
-      <!-- Bottom-left: Compact controls + FPS -->
+    <footer id="hud-bottom" class="hud-bottom" aria-label="Thanh đom đóm và hồi chiêu kỹ năng">
+      <!-- Bottom-left: Dynamic Controls + FPS -->
       <div class="hud-bottom-left">
         <ul class="controls-strip" role="list">
-          <li><kbd>WASD</kbd> Chạy</li>
-          <li><kbd>Space</kbd> Nhảy</li>
-          <li><kbd>Shift</kbd> Lướt</li>
-          <li><kbd>E</kbd> Nạp đèn</li>
-          <li><kbd>Q</kbd> Tỏa sáng</li>
-          <li><kbd>Di chuyển chuột</kbd> Xoay góc nhìn</li>
-          <li><kbd>Cuộn chuột</kbd> Zoom</li>
+          <li><kbd id="kbd-move">WASD</kbd> Chạy</li>
+          <li><kbd id="kbd-jump">Space</kbd> Nhảy</li>
+          <li><kbd id="kbd-dash">Shift</kbd> Lướt</li>
+          <li><kbd id="kbd-interact">E</kbd> Đèn</li>
+          <li><kbd id="kbd-pulse">Q</kbd> Tỏa sáng</li>
+          <li><kbd>Cuộn</kbd> Zoom</li>
         </ul>
         <span id="hud-fps" class="fps-chip" aria-label="Tốc độ khung hình">60 FPS</span>
       </div>
 
-      <!-- Bottom-center: 10-slot mote bar -->
+      <!-- Bottom-center: Dynamic mote bar (10..20) -->
       <div class="mote-bar-panel" aria-label="Thanh đom đóm đang mang">
         <div class="mote-bar-header">
           <span class="pill-label">Đom đóm</span>
@@ -92,7 +99,7 @@
         <div class="skill-card" id="skill-dash">
           <div class="skill-icon">💨</div>
           <div class="skill-meta">
-            <span class="skill-title">Lướt <kbd>Shift</kbd></span>
+            <span class="skill-title">Lướt <kbd id="kbd-skill-dash">Shift</kbd></span>
             <div class="cooldown-track">
               <div id="dash-bar" class="cooldown-fill"></div>
             </div>
@@ -102,7 +109,7 @@
         <div class="skill-card" id="skill-pulse">
           <div class="skill-icon">✨</div>
           <div class="skill-meta">
-            <span class="skill-title">Tỏa Sáng <kbd>Q</kbd></span>
+            <span class="skill-title">Tỏa Sáng <kbd id="kbd-skill-pulse">Q</kbd></span>
             <div class="cooldown-track">
               <div id="pulse-bar" class="cooldown-fill"></div>
             </div>
@@ -116,7 +123,7 @@
   <!-- Main Menu Dialog -->
   <dialog id="menu-dialog" aria-labelledby="menu-title">
     <div class="dialog-body">
-      <p class="eyebrow">Hành trình Ba Hòn Đảo</p>
+      <p class="eyebrow">Hành trình Ba Hòn Đảo · v1.0.0</p>
       <h1 id="menu-title" class="menu-heading">Đảo Đèn Lồng</h1>
       <p class="dialog-lead">
         Cùng <strong>Mây</strong> vượt qua 3 đêm — <strong>Đảo Bến</strong>, <strong>Đảo Cau</strong> và
@@ -131,7 +138,10 @@
           <button type="button" class="btn-secondary" data-night="2">Đêm 2: Đảo Cau</button>
           <button type="button" class="btn-secondary" data-night="3">Đêm 3: Đảo Chuông</button>
         </div>
-        <button id="btn-open-settings-menu" type="button" class="btn-ghost">Cài đặt (Âm thanh, chuột &amp; mù màu)</button>
+        <div class="menu-action-row">
+          <button id="btn-open-leaderboard" type="button" class="btn-secondary">Bảng xếp hạng</button>
+          <button id="btn-open-settings-menu" type="button" class="btn-ghost">Cài đặt &amp; Trợ năng</button>
+        </div>
       </div>
     </div>
   </dialog>
@@ -153,33 +163,56 @@
   <dialog id="pause-dialog" aria-labelledby="pause-title">
     <div class="dialog-body">
       <h2 id="pause-title">Tạm dừng</h2>
-      <p class="dialog-lead">Trò chơi đã tạm dừng hoàn toàn. Thời gian và Bóng Mực đều đứng yên.</p>
+      <p class="dialog-lead">Trò chơi đã tạm dừng hoàn toàn. Thời gian, dầu đèn và Bóng Mực đều đứng yên.</p>
       <div class="menu-buttons">
         <button id="btn-resume" type="button" class="btn-primary" autofocus>Tiếp tục</button>
         <button id="btn-restart-night" type="button" class="btn-secondary">Chơi lại Đêm này</button>
-        <button id="btn-open-settings-pause" type="button" class="btn-secondary">Cài đặt</button>
+        <button id="btn-open-settings-pause" type="button" class="btn-secondary">Cài đặt &amp; Trợ năng</button>
         <button id="btn-back-menu" type="button" class="btn-ghost">Về Menu chính</button>
       </div>
     </div>
   </dialog>
 
-  <!-- Settings Dialog -->
-  <dialog id="settings-dialog" aria-labelledby="settings-title">
+  <!-- Settings & Accessibility Dialog -->
+  <dialog id="settings-dialog" class="dialog-wide" aria-labelledby="settings-title">
     <div class="dialog-body">
-      <h2 id="settings-title">Cài đặt</h2>
-      <div class="setting-row">
-        <label for="setting-volume">Âm lượng tổng (<span id="volume-val">70%</span>)</label>
-        <input id="setting-volume" type="range" min="0" max="100" step="5" value="70" />
-      </div>
-      <div class="setting-row">
-        <label for="setting-sens">Độ nhạy xoay chuột (<span id="sens-val">0.40</span>)</label>
-        <input id="setting-sens" type="range" min="15" max="100" step="5" value="40" />
-      </div>
-      <div class="setting-row">
-        <label class="setting-toggle" for="setting-colorblind">
-          <input id="setting-colorblind" type="checkbox" />
-          <span>Bảng màu dễ phân biệt (Hỗ trợ mù màu: Bóng Mực #00B3FF, cảnh báo #FFFFFF + ⚠)</span>
-        </label>
+      <h2 id="settings-title">Cài đặt &amp; Dễ tiếp cận</h2>
+      <div class="settings-scroll">
+        <div class="setting-row">
+          <label for="setting-volume">Âm lượng tổng (<span id="volume-val">70%</span>)</label>
+          <input id="setting-volume" type="range" min="0" max="100" step="5" value="70" />
+        </div>
+        <div class="setting-row">
+          <label for="setting-sens">Độ nhạy xoay chuột (<span id="sens-val">0.40</span>)</label>
+          <input id="setting-sens" type="range" min="15" max="100" step="5" value="40" />
+        </div>
+        <div class="setting-row">
+          <label class="setting-toggle" for="setting-colorblind">
+            <input id="setting-colorblind" type="checkbox" />
+            <span>Bảng màu dễ phân biệt (Mù màu: Bóng Mực #00B3FF, cảnh báo #FFFFFF + ⚠)</span>
+          </label>
+        </div>
+        <div class="setting-row">
+          <label class="setting-toggle" for="setting-reduced-motion">
+            <input id="setting-reduced-motion" type="checkbox" />
+            <span>Giảm chuyển động (Tắt rung camera, FOV giật và hiệu ứng chớp màn hình)</span>
+          </label>
+        </div>
+        <div class="setting-row">
+          <label class="setting-toggle" for="setting-large-text">
+            <input id="setting-large-text" type="checkbox" />
+            <span>Chữ lớn (×1.25 cỡ chữ toàn bộ giao diện)</span>
+          </label>
+        </div>
+
+        <section class="keybinds-section" aria-label="Đổi phím điều khiển">
+          <div class="keybinds-header">
+            <h3>Đổi phím điều khiển</h3>
+            <button id="btn-reset-keybinds" type="button" class="btn-ghost btn-compact">Khôi phục mặc định</button>
+          </div>
+          <p id="keybind-status" class="keybind-status" role="status" aria-live="polite" hidden></p>
+          <div id="keybinds-grid" class="keybinds-grid"></div>
+        </section>
       </div>
       <form method="dialog" class="dialog-actions">
         <button type="submit" value="done" class="btn-primary" autofocus>Lưu &amp; Đóng</button>
@@ -187,7 +220,32 @@
     </div>
   </dialog>
 
-  <!-- Result / Dawn Victory Dialog -->
+  <!-- Local Leaderboard Dialog -->
+  <dialog id="leaderboard-dialog" class="dialog-wide" aria-labelledby="lb-title">
+    <div class="dialog-body">
+      <p class="eyebrow">Top 10 Cục Bộ</p>
+      <h2 id="lb-title">Bảng xếp hạng Đảo Đèn Lồng</h2>
+      <div class="lb-table-wrap">
+        <table class="lb-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Tên</th>
+              <th>Điểm</th>
+              <th>Đêm thắng</th>
+              <th>Thời điểm</th>
+            </tr>
+          </thead>
+          <tbody id="lb-tbody"></tbody>
+        </table>
+      </div>
+      <form method="dialog" class="dialog-actions">
+        <button type="submit" value="close" class="btn-primary" autofocus>Đóng</button>
+      </form>
+    </div>
+  </dialog>
+
+  <!-- Result / Dawn Victory Dialog (with Local Leaderboard submission) -->
   <dialog id="result-dialog" aria-labelledby="result-dialog-title">
     <div class="dialog-body">
       <p class="eyebrow" id="result-eyebrow">Kết quả</p>
@@ -195,7 +253,7 @@
       <p id="result-summary" class="dialog-lead"></p>
       <dl class="result-grid">
         <div>
-          <dt>Đèn đã thắp</dt>
+          <dt>Đèn đang sáng</dt>
           <dd id="res-lanterns">0 / 5</dd>
         </div>
         <div>
@@ -211,6 +269,17 @@
           <dd id="res-total-score" class="gold-text">0</dd>
         </div>
       </dl>
+
+      <!-- Leaderboard save box: shown on Night 3 Dawn victory OR loss on any Night -->
+      <div id="lb-submit-box" class="lb-submit-box" hidden>
+        <label for="lb-name-input">Lưu điểm vào Bảng xếp hạng (3–12 ký tự, hỗ trợ tiếng Việt):</label>
+        <div class="lb-submit-row">
+          <input id="lb-name-input" type="text" minlength="3" maxlength="12" placeholder="VD: May_2026" autocomplete="off" />
+          <button id="btn-lb-save" type="button" class="btn-secondary">Lưu điểm</button>
+        </div>
+        <p id="lb-submit-msg" class="lb-submit-msg" role="status" aria-live="polite"></p>
+      </div>
+
       <div class="dialog-actions">
         <button id="btn-result-menu" type="button" class="btn-ghost">Về Menu</button>
         <button id="btn-result-primary" type="button" class="btn-primary" autofocus>Tiếp tục</button>
