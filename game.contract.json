@@ -1,9 +1,11 @@
 {
-  "contract_version": "1.2",
+  "contract_version": "1.3",
   "team": "2A202603389-nguyen-quang-trung",
   "build_cmd": "npm install && npm run build",
-  "run_cmd": "npm run preview",
+  "run_cmd": "node scripts/run.mjs",
   "headless_cmd": "node dist/headless/headless/cli.js",
+  "bench_cmd": "node scripts/bench.mjs",
+  "soak_cmd": "node --max-semi-space-size=1 --expose-gc dist/headless/headless/soak.js",
   "tuning": {
     "player_speed": 6,
     "dash_speed": 14,

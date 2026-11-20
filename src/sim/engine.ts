@@ -125,6 +125,8 @@ export interface SimOptions {
   seed: number;
   night?: NightNumber;
   scenario?: ScenarioConfig;
+  /** Benchmark mode (Phase 4): disables decay, pickup, damage, spawns, and end conditions while shades wander normally. */
+  benchMode?: boolean;
 }
 
 export class LanternIslandSim {
@@ -153,6 +155,7 @@ export class LanternIslandSim {
   private randomShades: boolean;
   private randomDrifters: boolean;
   private windEnabled: boolean;
+  private benchMode: boolean;
   private nightStartEmitted = false;
   private nextWindDirDeg = 0;
 
@@ -178,6 +181,7 @@ export class LanternIslandSim {
     this.randomShades = scenario?.random_shades ?? true;
     this.randomDrifters = scenario?.random_drifters ?? this.map.hasDrifters;
     this.windEnabled = scenario?.wind_enabled ?? this.map.hasWind;
+    this.benchMode = options.benchMode ?? false;
 
     // 1. Initialize standardized lanterns for this night (Contract v1.2 fuel in 1/60 integer units)
     this.lanterns = this.map.lanterns.map((l) => ({
@@ -646,66 +650,69 @@ export class LanternIslandSim {
     }
 
     // Step 2 (Contract v1.2): Fuel decay (1/60 per tick) + Shade drain (5/60 per tick per draining shade)
-    const drainCandidates: { shade: ShadeEntity; lantern: LanternEntity }[] = [];
-    const sortedShadesForDrain = [...this.shades].sort((a, b) => compareEntityId(a.id, b.id));
-    for (const shade of sortedShadesForDrain) {
-      if (shade.state !== 'drain' || !shade.targetLanternId || shade.safePushTicks > 0) continue;
-      const target = this.lanterns.find((l) => l.id === shade.targetLanternId);
-      if (
-        target &&
-        target.lit &&
-        target.fuelUnits < LOW_FUEL_UNITS &&
-        distXZ(shade.pos, target.pos) <= SHADE_DRAIN_RADIUS
-      ) {
-        drainCandidates.push({ shade, lantern: target });
+    // Disabled in benchmark mode per Phase 4 spec.
+    if (!this.benchMode) {
+      const drainCandidates: { shade: ShadeEntity; lantern: LanternEntity }[] = [];
+      const sortedShadesForDrain = [...this.shades].sort((a, b) => compareEntityId(a.id, b.id));
+      for (const shade of sortedShadesForDrain) {
+        if (shade.state !== 'drain' || !shade.targetLanternId || shade.safePushTicks > 0) continue;
+        const target = this.lanterns.find((l) => l.id === shade.targetLanternId);
+        if (
+          target &&
+          target.lit &&
+          target.fuelUnits < LOW_FUEL_UNITS &&
+          distXZ(shade.pos, target.pos) <= SHADE_DRAIN_RADIUS
+        ) {
+          drainCandidates.push({ shade, lantern: target });
+        }
       }
-    }
 
-    for (const lantern of this.lanterns) {
-      if (lantern.lit) {
-        lantern.fuelUnits = Math.max(0, lantern.fuelUnits - FUEL_DECAY_UNITS_PER_TICK);
+      for (const lantern of this.lanterns) {
+        if (lantern.lit) {
+          lantern.fuelUnits = Math.max(0, lantern.fuelUnits - FUEL_DECAY_UNITS_PER_TICK);
+        }
       }
-    }
 
-    const drainEventsToEmit: { shade: ShadeEntity; lantern: LanternEntity }[] = [];
-    for (const entry of drainCandidates) {
-      entry.lantern.fuelUnits = Math.max(0, entry.lantern.fuelUnits - FUEL_DRAIN_UNITS_PER_TICK);
-      entry.shade.drainTicks += 1;
-      if (entry.shade.drainTicks % SHADE_DRAIN_EVENT_INTERVAL_TICKS === 0) {
-        drainEventsToEmit.push(entry);
+      const drainEventsToEmit: { shade: ShadeEntity; lantern: LanternEntity }[] = [];
+      for (const entry of drainCandidates) {
+        entry.lantern.fuelUnits = Math.max(0, entry.lantern.fuelUnits - FUEL_DRAIN_UNITS_PER_TICK);
+        entry.shade.drainTicks += 1;
+        if (entry.shade.drainTicks % SHADE_DRAIN_EVENT_INTERVAL_TICKS === 0) {
+          drainEventsToEmit.push(entry);
+        }
       }
-    }
-    for (const entry of drainEventsToEmit) {
-      events.push({
-        type: 'event',
-        tick: this.tick,
-        name: 'fuel_drain',
-        data: {
-          lantern_id: entry.lantern.id,
-          shade_id: entry.shade.id,
-          fuel: round1(entry.lantern.fuelUnits / FUEL_UNITS_PER_POINT),
-        },
-      });
-    }
-
-    // Immediately after Step 2: extinguish any lit lantern with fuel <= 0
-    for (const lantern of this.lanterns) {
-      if (lantern.lit && lantern.fuelUnits <= 0) {
-        lantern.lit = false;
-        lantern.fuelUnits = 0;
-        lantern.deposited = 0;
-        lantern.everLit = true;
+      for (const entry of drainEventsToEmit) {
         events.push({
           type: 'event',
           tick: this.tick,
-          name: 'lantern_out',
-          data: { lantern_id: lantern.id },
+          name: 'fuel_drain',
+          data: {
+            lantern_id: entry.lantern.id,
+            shade_id: entry.shade.id,
+            fuel: round1(entry.lantern.fuelUnits / FUEL_UNITS_PER_POINT),
+          },
         });
-        for (const shade of this.shades) {
-          if (shade.state === 'drain' && shade.targetLanternId === lantern.id) {
-            shade.state = 'wander';
-            shade.targetLanternId = null;
-            shade.drainTicks = 0;
+      }
+
+      // Immediately after Step 2: extinguish any lit lantern with fuel <= 0
+      for (const lantern of this.lanterns) {
+        if (lantern.lit && lantern.fuelUnits <= 0) {
+          lantern.lit = false;
+          lantern.fuelUnits = 0;
+          lantern.deposited = 0;
+          lantern.everLit = true;
+          events.push({
+            type: 'event',
+            tick: this.tick,
+            name: 'lantern_out',
+            data: { lantern_id: lantern.id },
+          });
+          for (const shade of this.shades) {
+            if (shade.state === 'drain' && shade.targetLanternId === lantern.id) {
+              shade.state = 'wander';
+              shade.targetLanternId = null;
+              shade.drainTicks = 0;
+            }
           }
         }
       }
@@ -858,7 +865,7 @@ export class LanternIslandSim {
     }
 
     // ── STEP 4: Pick up motes (respecting dynamic capacity) and charms ──
-    const canInteractWorld = this.player.fallRespawnTicks === 0 && this.player.flames > 0;
+    const canInteractWorld = !this.benchMode && this.player.fallRespawnTicks === 0 && this.player.flames > 0;
     if (canInteractWorld) {
       const carryCap = this.getCarryCapacity();
       if (this.player.carried < carryCap && this.motes.length > 0) {
@@ -1221,9 +1228,11 @@ export class LanternIslandSim {
             continue;
           }
 
-          // Priority 2: nearest unlit lantern (fallback random patrol if all lanterns are safely lit)
+          // Priority 2: nearest unlit lantern (in benchMode patrol evenly across island so 200 shades keep roaming)
           shade.targetLanternId = null;
-          const unlitLantern = this.findNearestLantern(shade.pos, (l) => !l.lit);
+          const unlitLantern = this.benchMode
+            ? null
+            : this.findNearestLantern(shade.pos, (l) => !l.lit);
           let tx: number;
           let tz: number;
           if (unlitLantern) {
@@ -1234,9 +1243,15 @@ export class LanternIslandSim {
               !shade.wanderTarget ||
               Math.hypot(shade.wanderTarget[0] - shade.pos[0], shade.wanderTarget[1] - shade.pos[2]) < 1.0
             ) {
-              const pts = this.map.shadeSpawnPoints;
-              const pick = pts[Math.floor(this.rng.next() * pts.length)];
-              shade.wanderTarget = [pick[0], pick[2]];
+              if (this.benchMode) {
+                const r = Math.sqrt(this.rng.next()) * 36.0;
+                const a = this.rng.next() * Math.PI * 2;
+                shade.wanderTarget = [round3(Math.cos(a) * r), round3(Math.sin(a) * r)];
+              } else {
+                const pts = this.map.shadeSpawnPoints;
+                const pick = pts[Math.floor(this.rng.next() * pts.length)];
+                shade.wanderTarget = [pick[0], pick[2]];
+              }
             }
             tx = shade.wanderTarget[0];
             tz = shade.wanderTarget[1];
@@ -1452,7 +1467,9 @@ export class LanternIslandSim {
     }
 
     // ── STEP 11: Evaluate win/loss (Contract v1.2: no_flames ALWAYS first; dawn_survived vs dawn at timeout) ──
-    this.evaluateWinLoss(events);
+    if (!this.benchMode) {
+      this.evaluateWinLoss(events);
+    }
 
     return events;
   }
@@ -1702,3 +1719,70 @@ export class LanternIslandSim {
     return drifter;
   }
 }
+
+/**
+ * Standardized Phase 4 Benchmark Scene factory (Contract v1.3):
+ * - Night 1, L1..L3 lit with fuel=100, L4..L5 unlit
+ * - Exactly 200 Shades in state 'wander' evenly distributed across the island (outside L1..L3 safe zones)
+ * - Exactly 100 Motes evenly distributed across the island
+ * - Mây stationary at (0,0,0), benchMode disables spawns, damage, pickup, fuel decay, and end conditions.
+ */
+export function createBenchSim(seed = 42): LanternIslandSim {
+  const rng = new SeededRng(seed);
+  const map = getNightMap(1);
+  const litPos = map.lanterns.slice(0, 3).map((l) => l.pos);
+
+  const shades: { id: string; pos: Vec3; state: 'wander' }[] = [];
+  for (let i = 0; i < 200; i++) {
+    let px = 0;
+    let pz = 0;
+    for (let attempt = 0; attempt < 40; attempt++) {
+      // Uniform disk sampling inside island radius 38m (outside safe zones & center)
+      const r = Math.sqrt(rng.next()) * 37.5;
+      const a = rng.next() * Math.PI * 2;
+      px = round3(Math.cos(a) * r);
+      pz = round3(Math.sin(a) * r);
+      const inSafe = litPos.some((lp) => Math.hypot(px - lp[0], pz - lp[2]) <= TUNING.safe_radius + 0.5);
+      if (!inSafe && Math.hypot(px, pz) >= 2.5) break;
+    }
+    shades.push({ id: `S${i + 1}`, pos: [px, 0, pz], state: 'wander' });
+  }
+
+  const motes: Vec3[] = [];
+  for (let i = 0; i < 100; i++) {
+    const r = Math.sqrt(rng.next()) * 37.0;
+    const a = rng.next() * Math.PI * 2;
+    motes.push([round3(Math.cos(a) * r), 0, round3(Math.sin(a) * r)]);
+  }
+
+  const sim = new LanternIslandSim({
+    seed,
+    night: 1,
+    benchMode: true,
+    scenario: {
+      player: { pos: [0, 0, 0], carried: 0, flames: 3 },
+      random_motes: false,
+      random_shades: false,
+      random_drifters: false,
+      wind_enabled: false,
+      lanterns: [
+        { id: 'L1', lit: true, fuel: 100, ever_lit: true },
+        { id: 'L2', lit: true, fuel: 100, ever_lit: true },
+        { id: 'L3', lit: true, fuel: 100, ever_lit: true },
+        { id: 'L4', lit: false, ever_lit: false },
+        { id: 'L5', lit: false, ever_lit: false },
+      ],
+      shades,
+      motes,
+    },
+  });
+
+  // Assign distinct seeded patrol waypoints so all 200 wander shades keep moving smoothly across the island
+  for (const s of sim.shades) {
+    const r = Math.sqrt(rng.next()) * 36.0;
+    const a = rng.next() * Math.PI * 2;
+    s.wanderTarget = [round3(Math.cos(a) * r), round3(Math.sin(a) * r)];
+  }
+  return sim;
+}
+

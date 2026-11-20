@@ -1,6 +1,6 @@
 {
   "name": "dao-den-long",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,7 +8,11 @@
     "build:headless": "tsc -p tsconfig.headless.json",
     "build:web": "vite build",
     "build": "npm run build:headless && npm run build:web",
-    "preview": "vite preview --host 0.0.0.0 --port 4173",
+    "start": "node scripts/run.mjs",
+    "preview": "node scripts/run.mjs",
+    "bench": "node scripts/bench.mjs --seed 42 --duration 30 --out bench.json",
+    "soak": "node --max-semi-space-size=1 --expose-gc dist/headless/headless/soak.js --seed 7 --nights 10 --out soak.json",
+    "package:release": "node scripts/package-release.mjs",
     "typecheck": "tsc --noEmit",
     "test:unit": "vitest run",
     "verify:contract": "node scripts/verify-contract.mjs",

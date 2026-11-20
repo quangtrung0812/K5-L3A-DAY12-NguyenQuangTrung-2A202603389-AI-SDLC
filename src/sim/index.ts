@@ -3,3 +3,4 @@ export * from './tuning.js';
 export * from './prng.js';
 export * from './maps.js';
 export * from './engine.js';
+export * from './leaderboard.js';
