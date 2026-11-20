@@ -17,5 +17,7 @@ jobs:
         run: npm install
       - name: Build headless and web
         run: npm run build
-      - name: Run full verification suite
+      - name: Run full verification suite (unit + Contract v1.3 + soak + leaderboard export)
         run: npm test
+      - name: Verify clean release packaging
+        run: npm run package:release

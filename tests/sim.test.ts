@@ -2,14 +2,17 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  addLeaderboardEntry,
   CHARM_DURATION_TICKS,
   CHARM_RESPAWN_TICKS,
+  createBenchSim,
   createDefaultInput,
   DASH_COOLDOWN_TICKS,
   DASH_DURATION_TICKS,
   distXZ,
   DROPPED_MOTE_TTL_TICKS,
   FALL_RESPAWN_TICKS,
+  formatIsoWithTimezone,
   FUEL_UNITS_PER_POINT,
   INVULN_TICKS,
   LanternIslandSim,
@@ -17,6 +20,7 @@ import {
   SAFE_PUSH_MAX_TICKS,
   SHADE_RECOIL_TICKS,
   TUNING,
+  validateLeaderboardName,
 } from '../src/sim/index.js';
 import {
   ContractFormatError,
@@ -24,12 +28,16 @@ import {
   validateScenarioConfig,
 } from '../src/headless/validation.js';
 
-describe('Test Contract v1.2 — Core Sync & Non-Replaced Phase 1–2 Regression', () => {
-  it('keeps src/sim/tuning.ts 100% synchronized with game.contract.json v1.2', () => {
+describe('Test Contract v1.3 — Core Sync & Non-Replaced Phase 1–2 Regression', () => {
+  it('keeps src/sim/tuning.ts 100% synchronized with game.contract.json v1.3 (including bench_cmd and soak_cmd)', () => {
     const raw = readFileSync(resolve(process.cwd(), 'game.contract.json'), 'utf8');
     const contract = JSON.parse(raw);
-    expect(contract.contract_version).toBe('1.2');
+    expect(contract.contract_version).toBe('1.3');
     expect(contract.tuning).toEqual(TUNING);
+    expect(typeof contract.bench_cmd).toBe('string');
+    expect(contract.bench_cmd.length).toBeGreaterThan(0);
+    expect(typeof contract.soak_cmd).toBe('string');
+    expect(contract.soak_cmd.length).toBeGreaterThan(0);
     expect(TUNING.night1_duration_s).toBe(240);
     expect(TUNING.night2_duration_s).toBe(270);
     expect(TUNING.night3_duration_s).toBe(300);
@@ -949,5 +957,79 @@ describe('Phase 3 New Features — Lantern Fuel, Shade Drain, Dawn Win, Capacity
     expect(evFinalOut.find((e) => e.name === 'lantern_out')?.data).toEqual({ lantern_id: 'L3' });
     expect(simFinalTickOut.state).toBe('lost');
     expect(simFinalTickOut.gameOverReason).toBe('dawn');
+  });
+});
+
+describe('Phase 4 Release Features — Standardized Bench Scene & Local Leaderboard', () => {
+  it('builds standardized Phase 4 benchmark scene (200 wander shades, 100 motes, L1-L3 lit fuel 100, no decay/damage/pickup/end)', () => {
+    const sim = createBenchSim(42);
+    expect(sim.night).toBe(1);
+    expect(sim.shades).toHaveLength(200);
+    expect(sim.shades.every((s) => s.state === 'wander')).toBe(true);
+    expect(sim.motes).toHaveLength(100);
+    expect(sim.lanterns.filter((l) => l.lit).map((l) => l.id)).toEqual(['L1', 'L2', 'L3']);
+    expect(sim.lanterns.slice(0, 3).every((l) => l.fuelUnits === 6000)).toBe(true);
+    expect(sim.player.pos).toEqual([0, 0, 0]);
+
+    const initialShadePos = sim.shades[0].pos.slice();
+    for (let t = 0; t < 180; t++) {
+      sim.step(createDefaultInput());
+    }
+    // Shades keep wandering, while fuel stays 100, motes stay 100, flames stay 3, state stays playing
+    expect(sim.shades[0].pos[0] !== initialShadePos[0] || sim.shades[0].pos[2] !== initialShadePos[2]).toBe(true);
+    expect(sim.shades).toHaveLength(200);
+    expect(sim.motes).toHaveLength(100);
+    expect(sim.lanterns[0].fuelUnits).toBe(6000);
+    expect(sim.player.flames).toBe(3);
+    expect(sim.player.carried).toBe(0);
+    expect(sim.state).toBe('playing');
+  });
+
+  it('validates leaderboard names (3-12 chars ASCII + Vietnamese), sorts score DESC / earlier achieved_at ASC, and caps at Top 10', () => {
+    expect(validateLeaderboardName('May_01').valid).toBe(true);
+    expect(validateLeaderboardName('MâyĐèn2026').valid).toBe(true);
+    expect(validateLeaderboardName('ab').valid).toBe(false);
+    expect(validateLeaderboardName('1234567890123').valid).toBe(false);
+    expect(validateLeaderboardName('bad!name').valid).toBe(false);
+
+    const iso = formatIsoWithTimezone(new Date('2026-11-20T12:00:00Z'));
+    expect(iso).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/);
+
+    let entries = addLeaderboardEntry([], {
+      name: 'LaterTie',
+      score: 500,
+      nights_won: 2,
+      achieved_at: '2026-11-20T12:05:00+07:00',
+      seed: 1,
+    });
+    entries = addLeaderboardEntry(entries, {
+      name: 'EarlierTie',
+      score: 500,
+      nights_won: 2,
+      achieved_at: '2026-11-20T12:00:00+07:00',
+      seed: 2,
+    });
+    entries = addLeaderboardEntry(entries, {
+      name: 'TopScore',
+      score: 900,
+      nights_won: 3,
+      achieved_at: '2026-11-20T12:10:00+07:00',
+      seed: 3,
+    });
+    expect(entries.map((e) => e.name)).toEqual(['TopScore', 'EarlierTie', 'LaterTie']);
+
+    // Add 10 more low scores -> must keep exact Top 10
+    for (let i = 0; i < 10; i++) {
+      entries = addLeaderboardEntry(entries, {
+        name: `Runner_${i}`,
+        score: 100 + i * 10,
+        nights_won: 1,
+        achieved_at: `2026-11-20T12:${String(20 + i).padStart(2, '0')}:00+07:00`,
+        seed: 10 + i,
+      });
+    }
+    expect(entries).toHaveLength(10);
+    expect(entries[0].name).toBe('TopScore');
+    expect(entries[9].score).toBe(130);
   });
 });

@@ -6,7 +6,9 @@ import { resolve } from 'node:path';
 const root = process.cwd();
 const contract = JSON.parse(readFileSync(resolve(root, 'game.contract.json'), 'utf8'));
 const [cmdBin, ...cmdBaseArgs] = contract.headless_cmd.split(/\s+/);
-const outDir = resolve(root, 'tmp/verify-phase3');
+const [soakBin, ...soakBaseArgs] = contract.soak_cmd.split(/\s+/);
+const [runBin, ...runBaseArgs] = contract.run_cmd.split(/\s+/);
+const outDir = resolve(root, 'tmp/verify-phase4');
 mkdirSync(outDir, { recursive: true });
 
 const VALID_SHADE_STATES = new Set(['spawning', 'wander', 'chase', 'recoil', 'stunned', 'drain']);
@@ -548,14 +550,67 @@ runCheck('ERR', 'Error Handling', 'Invalid v1.2 inputs/scenario/JSON -> exit 2; 
   return 'bad_inputs=2, bad_scenario=2, bad_fuel=2, malformed_json=2, bad_night=1';
 });
 
-// Write generated Phase 3 proof report
-const proofDir = resolve(root, 'docs/proof/phase-3');
+// ── PHASE 4 SOAK TEST (10 CONSECUTIVE NIGHTS) ──
+runCheck('P4-SOAK', 'Phase 4 Stability', 'Soak test (10 consecutive nights, seed 7+i): 0 crashes & mem_end <= 1.2 * mem_start', () => {
+  const soakOut = resolve(outDir, 'soak.json');
+  const res = spawnSync(
+    soakBin,
+    [...soakBaseArgs, '--seed', '7', '--nights', '10', '--out', soakOut],
+    { cwd: root, encoding: 'utf8' },
+  );
+  assert(res.status === 0, `Soak exit=${res.status}: ${res.stderr}`);
+  const data = JSON.parse(readFileSync(soakOut, 'utf8'));
+  assert(data.nights === 10 && data.crashes === 0, `Unexpected soak: ${JSON.stringify(data)}`);
+  assert(Array.isArray(data.results) && data.results.length === 10, 'Invalid soak results array');
+  assert(
+    data.mem_end_mb <= 1.2 * data.mem_start_mb,
+    `Memory grew > 20%: start=${data.mem_start_mb}MB, end=${data.mem_end_mb}MB`,
+  );
+  return `10 nights, crashes=0, mem=${data.mem_start_mb}->${data.mem_end_mb}MB (${(data.mem_end_mb / data.mem_start_mb).toFixed(2)}x), ${data.duration_s}s`;
+});
+
+// ── PHASE 4 LEADERBOARD CLI EXPORT ──
+runCheck('P4-LB', 'Phase 4 Leaderboard', 'run_cmd --export-leaderboard writes valid sorted {"entries": [...]} JSON', () => {
+  const tempDataDir = resolve(outDir, 'lb-data');
+  mkdirSync(tempDataDir, { recursive: true });
+  writeFileSync(
+    resolve(tempDataDir, 'leaderboard.json'),
+    JSON.stringify({
+      entries: [
+        { name: 'LanternB', score: 450, nights_won: 2, achieved_at: '2026-11-20T22:05:00+07:00', seed: 2 },
+        { name: 'Mây_Top', score: 920, nights_won: 3, achieved_at: '2026-11-20T22:00:00+07:00', seed: 1 },
+        { name: 'LanternA', score: 450, nights_won: 2, achieved_at: '2026-11-20T22:01:00+07:00', seed: 3 },
+      ],
+    }),
+    'utf8',
+  );
+  const lbOut = resolve(outDir, 'leaderboard-export.json');
+  const res = spawnSync(runBin, [...runBaseArgs, '--export-leaderboard', lbOut], {
+    cwd: root,
+    encoding: 'utf8',
+    env: { ...process.env, DAO_DEN_LONG_DATA_DIR: tempDataDir },
+  });
+  assert(res.status === 0, `Export exit=${res.status}: ${res.stderr}`);
+  const exported = JSON.parse(readFileSync(lbOut, 'utf8'));
+  assert(Array.isArray(exported.entries) && exported.entries.length === 3, 'Missing exported entries');
+  assert(
+    exported.entries.map((e) => e.name).join(',') === 'Mây_Top,LanternA,LanternB',
+    `Wrong sort order: ${exported.entries.map((e) => e.name).join(',')}`,
+  );
+  return `exported 3 entries in exact order: ${exported.entries.map((e) => `${e.name}(${e.score})`).join(' > ')}`;
+});
+
+// Write generated Phase 4 proof report
+const proofDir = resolve(root, 'docs/proof/phase-4');
 mkdirSync(proofDir, { recursive: true });
 const reportLines = [
-  '# Phase 3 — Báo cáo Kiểm chứng Test Contract v1.2 (Tự động)',
+  '# Phase 4 — Báo cáo Kiểm chứng Test Contract v1.3 (Tự động)',
   '',
   `- **Lệnh chạy:** \`npm run verify:contract\``,
   `- **Headless cmd:** \`${contract.headless_cmd}\``,
+  `- **Bench cmd:** \`${contract.bench_cmd}\``,
+  `- **Soak cmd:** \`${contract.soak_cmd}\``,
+  `- **Run cmd:** \`${contract.run_cmd}\``,
   `- **Contract version:** \`${contract.contract_version}\``,
   `- **Node.js:** \`${process.version}\` (${process.platform}/${process.arch})`,
   '',
@@ -569,4 +624,4 @@ writeFileSync(resolve(proofDir, 'contract-report.md'), reportLines.join('\n'), '
 if (process.exitCode && process.exitCode !== 0) {
   process.exit(process.exitCode);
 }
-console.log(`\nAll ${checks.length} Phase 3 contract checks passed! Report written to docs/proof/phase-3/contract-report.md`);
+console.log(`\nAll ${checks.length} Phase 4 contract checks passed! Report written to docs/proof/phase-4/contract-report.md`);
