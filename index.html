@@ -1,128 +1,215 @@
 <!DOCTYPE html>
 <html lang="vi">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Đảo Đèn Lồng — Đêm 1: Đảo Bến</title>
-  </head>
-  <body>
-    <main id="game-shell" aria-label="Khu vực chơi game Đảo Đèn Lồng">
-      <div id="canvas-root"></div>
 
-      <header class="hud-top" aria-label="Thông số màn chơi">
-        <div class="hud-card hud-title-card">
-          <h1>Đảo Đèn Lồng</h1>
-          <p class="subtitle">Đêm 1 · Đảo Bến</p>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Đảo Đèn Lồng — Ba Hòn Đảo</title>
+</head>
+
+<body>
+  <main id="game-shell" aria-label="Khu vực chơi game Đảo Đèn Lồng">
+    <div id="canvas-root"></div>
+
+    <!-- Off-screen directional arrow toward nearest unlit lantern -->
+    <div id="offscreen-arrow" class="offscreen-arrow" hidden aria-hidden="true">
+      <span class="arrow-head">▲</span>
+      <span id="offscreen-arrow-label" class="arrow-dist">L1</span>
+    </div>
+
+    <!-- Standardized HUD Layout -->
+    <header class="hud-top" aria-label="Thông số màn chơi">
+      <!-- Top-left: Flames + Night & Status -->
+      <div class="hud-left">
+        <div class="hud-pill flames-pill" aria-label="Ngọn lửa sinh mệnh">
+          <span class="pill-label" id="hud-night-name">Đêm 1 · Đảo Bến</span>
+          <span id="hud-flames" class="pill-value flames-value">🔥🔥🔥</span>
         </div>
-
-        <div class="hud-stats">
-          <div class="hud-pill" aria-label="Ngọn lửa sinh mệnh">
-            <span class="pill-label">Ngọn lửa</span>
-            <span id="hud-flames" class="pill-value flames-value">🔥🔥🔥</span>
-          </div>
-          <div class="hud-pill" aria-label="Đom đóm đang mang">
-            <span class="pill-label">Đom đóm</span>
-            <span id="hud-carried" class="pill-value warm-text">0 / 5</span>
-          </div>
-          <div class="hud-pill" aria-label="Đèn lồng đã thắp">
-            <span class="pill-label">Đèn thắp</span>
-            <span id="hud-lanterns" class="pill-value warm-text">0 / 5</span>
-          </div>
-          <div class="hud-pill" aria-label="Thời gian còn lại">
-            <span class="pill-label">Bình minh</span>
-            <span id="hud-time" class="pill-value">04:00</span>
-          </div>
-          <div class="hud-pill" aria-label="Điểm số">
-            <span class="pill-label">Điểm</span>
-            <span id="hud-score" class="pill-value warm-text">0</span>
-          </div>
+        <div id="hud-charm-badge" class="status-badge charm-badge" hidden>
+          Bùa Gió: <span id="hud-charm-time">10.0s</span>
         </div>
-
-        <div class="hud-actions">
-          <button id="btn-mute" type="button" class="hud-btn" aria-pressed="false">
-            Âm thanh: Bật
-          </button>
-          <button id="btn-help" type="button" class="hud-btn">
-            Hướng dẫn
-          </button>
-          <button id="btn-restart-hud" type="button" class="hud-btn hud-btn-warm">
-            Chơi lại
-          </button>
+        <div id="hud-wind-badge" class="status-badge wind-badge" hidden>
+          Gió mạnh sắp tới!
         </div>
-      </header>
-
-      <div id="hud-prompt" class="hud-prompt" hidden></div>
-      <div id="hud-live" class="hud-toast" role="status" aria-live="polite"></div>
-
-      <footer class="hud-bottom" aria-label="Phím điều khiển và kỹ năng">
-        <div class="pulse-status">
-          <span class="pill-label">Tỏa sáng (Q / Shift)</span>
-          <div class="cooldown-track" aria-hidden="true">
-            <div id="pulse-bar" class="cooldown-fill"></div>
-          </div>
-          <span id="hud-pulse-text" class="pulse-label">Sẵn sàng (tốn 1 đom đóm)</span>
-        </div>
-
-        <ul class="controls-strip" role="list">
-          <li><kbd>WASD</kbd> / <kbd>↑↓←→</kbd> Di chuyển</li>
-          <li><kbd>Space</kbd> Nhảy</li>
-          <li><kbd>E</kbd> / <kbd>F</kbd> Thắp đèn</li>
-          <li><kbd>Q</kbd> / <kbd>Shift</kbd> Tỏa sáng</li>
-          <li><kbd>Kéo chuột</kbd> / <kbd>J</kbd><kbd>L</kbd> Xoay góc nhìn</li>
-        </ul>
-      </footer>
-    </main>
-
-    <!-- Native modal dialog for Start / Help -->
-    <dialog id="help-dialog" aria-labelledby="help-dialog-title">
-      <div class="dialog-body">
-        <h2 id="help-dialog-title">Đảo Đèn Lồng — Đêm 1: Đảo Bến</h2>
-        <p class="dialog-lead">
-          Sương đen đã nuốt trọn ánh sáng của Đảo Bến. Hãy cùng <strong>Mây</strong> thu thập những đốm
-          <strong>đom đóm vàng ấm</strong> và mang về thắp sáng toàn bộ <strong>5 Đèn Lồng Lớn</strong>
-          trước khi bình minh lên!
-        </p>
-        <ul class="dialog-list">
-          <li><strong>Nhặt đom đóm:</strong> Chạy lại gần đom đóm để gom (tối đa 5 đốm).</li>
-          <li><strong>Thắp đèn (<kbd>E</kbd>):</strong> Lại gần cột đèn và nạp đủ 4 đốm sáng. Đèn đã thắp tạo vòng ánh sáng an toàn mà <strong>Bóng Mực</strong> không thể bước vào.</li>
-          <li><strong>Tỏa sáng (<kbd>Q</kbd> / <kbd>Shift</kbd>):</strong> Tốn 1 đom đóm để đẩy lùi và làm choáng Bóng Mực trong 3 giây.</li>
-          <li><strong>Ngọn lửa:</strong> Bị Bóng Mực chạm sẽ mất 1 ngọn lửa (tổng 3) và rơi một nửa đom đóm đang mang.</li>
-        </ul>
-        <form method="dialog" class="dialog-actions">
-          <button type="submit" value="play" class="btn-primary" autofocus>Bắt đầu thắp đèn</button>
-        </form>
       </div>
-    </dialog>
 
-    <!-- Native modal dialog for Win / Loss -->
-    <dialog id="result-dialog" aria-labelledby="result-dialog-title">
-      <div class="dialog-body">
-        <h2 id="result-dialog-title">Kết quả Đêm 1</h2>
-        <p id="result-summary" class="dialog-lead"></p>
-        <dl class="result-grid">
-          <div>
-            <dt>Đèn đã thắp</dt>
-            <dd id="res-lanterns">0 / 5</dd>
-          </div>
-          <div>
-            <dt>Ngọn lửa còn</dt>
-            <dd id="res-flames">0 / 3</dd>
-          </div>
-          <div>
-            <dt>Thời gian còn</dt>
-            <dd id="res-time">00:00</dd>
-          </div>
-          <div>
-            <dt>Tổng điểm</dt>
-            <dd id="res-score" class="warm-text">0</dd>
-          </div>
-        </dl>
-        <form method="dialog" class="dialog-actions">
-          <button type="submit" value="restart" class="btn-primary" autofocus>Chơi lại Đêm 1</button>
-        </form>
+      <!-- Top-center: Clock mm:ss (red & blinking <= 30s) -->
+      <div class="hud-center">
+        <div id="hud-clock-box" class="hud-clock" aria-label="Thời gian còn lại">
+          <span class="pill-label">Bình minh</span>
+          <span id="hud-time" class="clock-value">05:00</span>
+        </div>
       </div>
-    </dialog>
 
-    <script type="module" src="/src/client/main.ts"></script>
-  </body>
+      <!-- Top-right: Lanterns k/n + Score + Pause -->
+      <div class="hud-right">
+        <div class="hud-pill" aria-label="Đèn lồng đã thắp">
+          <span class="pill-label">Đèn thắp</span>
+          <span id="hud-lanterns" class="pill-value gold-text">0 / 5</span>
+        </div>
+        <div class="hud-pill" aria-label="Điểm số">
+          <span class="pill-label">Điểm</span>
+          <span id="hud-score" class="pill-value gold-text">0</span>
+        </div>
+        <button id="btn-pause-hud" type="button" class="hud-btn" aria-label="Tạm dừng">
+          Tạm dừng (P)
+        </button>
+      </div>
+    </header>
+
+    <div id="hud-prompt" class="hud-prompt" hidden></div>
+    <div id="hud-live" class="hud-toast" role="status" aria-live="polite"></div>
+
+      <footer class="hud-bottom" aria-label="Thanh đom đóm và hồi chiêu kỹ năng">
+        <!-- Bottom-left: Compact controls + FPS -->
+        <div class="hud-bottom-left">
+          <ul class="controls-strip" role="list">
+            <li><kbd>WASD</kbd> Chạy</li>
+            <li><kbd>Space</kbd> Nhảy</li>
+            <li><kbd>Shift</kbd> Lướt</li>
+            <li><kbd>E</kbd> Nạp đèn</li>
+            <li><kbd>Q</kbd> Tỏa sáng</li>
+            <li><kbd>Di chuyển chuột</kbd> Xoay góc nhìn</li>
+            <li><kbd>Cuộn chuột</kbd> Zoom</li>
+          </ul>
+          <span id="hud-fps" class="fps-chip" aria-label="Tốc độ khung hình">60 FPS</span>
+        </div>
+
+      <!-- Bottom-center: 10-slot mote bar -->
+      <div class="mote-bar-panel" aria-label="Thanh đom đóm đang mang">
+        <div class="mote-bar-header">
+          <span class="pill-label">Đom đóm</span>
+          <span id="hud-carried-text" class="gold-text">0 / 10</span>
+        </div>
+        <div id="mote-slots" class="mote-slots" aria-hidden="true"></div>
+      </div>
+
+      <!-- Bottom-right: Dash & Pulse cooldown icons -->
+      <div class="skills-panel" aria-label="Kỹ năng Lướt và Tỏa Sáng">
+        <div class="skill-card" id="skill-dash">
+          <div class="skill-icon">💨</div>
+          <div class="skill-meta">
+            <span class="skill-title">Lướt <kbd>Shift</kbd></span>
+            <div class="cooldown-track">
+              <div id="dash-bar" class="cooldown-fill"></div>
+            </div>
+            <span id="hud-dash-text" class="skill-sub">Sẵn sàng</span>
+          </div>
+        </div>
+        <div class="skill-card" id="skill-pulse">
+          <div class="skill-icon">✨</div>
+          <div class="skill-meta">
+            <span class="skill-title">Tỏa Sáng <kbd>Q</kbd></span>
+            <div class="cooldown-track">
+              <div id="pulse-bar" class="cooldown-fill"></div>
+            </div>
+            <span id="hud-pulse-text" class="skill-sub">Cần 3 đom đóm</span>
+          </div>
+        </div>
+      </div>
+    </footer>
+  </main>
+
+  <!-- Main Menu Dialog -->
+  <dialog id="menu-dialog" aria-labelledby="menu-title">
+    <div class="dialog-body">
+      <p class="eyebrow">Hành trình Ba Hòn Đảo</p>
+      <h1 id="menu-title" class="menu-heading">Đảo Đèn Lồng</h1>
+      <p class="dialog-lead">
+        Cùng <strong>Mây</strong> vượt qua 3 đêm — <strong>Đảo Bến</strong>, <strong>Đảo Cau</strong> và
+        <strong>Đảo Chuông</strong> — thu thập đom đóm, thắp sáng các Đèn Lồng Lớn trước khi bình minh lên.
+      </p>
+      <div class="menu-buttons">
+        <button id="btn-start-campaign" type="button" class="btn-primary" autofocus>
+          Bắt đầu Hành trình (Đêm 1 → 3)
+        </button>
+        <div class="night-select-row">
+          <button type="button" class="btn-secondary" data-night="1">Đêm 1: Đảo Bến</button>
+          <button type="button" class="btn-secondary" data-night="2">Đêm 2: Đảo Cau</button>
+          <button type="button" class="btn-secondary" data-night="3">Đêm 3: Đảo Chuông</button>
+        </div>
+        <button id="btn-open-settings-menu" type="button" class="btn-ghost">Cài đặt âm thanh &amp; chuột</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Night Intro Dialog (Ông Đăng) -->
+  <dialog id="intro-dialog" aria-labelledby="intro-title">
+    <div class="dialog-body">
+      <p class="eyebrow" id="intro-eyebrow">Đêm 1 / 3</p>
+      <h2 id="intro-title">Đêm 1 — Đảo Bến</h2>
+      <blockquote id="intro-quote" class="ong-dang-quote"></blockquote>
+      <ul id="intro-tips" class="dialog-list"></ul>
+      <form method="dialog" class="dialog-actions">
+        <button type="submit" value="begin" class="btn-primary" autofocus>Thắp sáng hòn đảo</button>
+      </form>
+    </div>
+  </dialog>
+
+  <!-- Pause Dialog -->
+  <dialog id="pause-dialog" aria-labelledby="pause-title">
+    <div class="dialog-body">
+      <h2 id="pause-title">Tạm dừng</h2>
+      <p class="dialog-lead">Trò chơi đã tạm dừng hoàn toàn. Thời gian và Bóng Mực đều đứng yên.</p>
+      <div class="menu-buttons">
+        <button id="btn-resume" type="button" class="btn-primary" autofocus>Tiếp tục</button>
+        <button id="btn-restart-night" type="button" class="btn-secondary">Chơi lại Đêm này</button>
+        <button id="btn-open-settings-pause" type="button" class="btn-secondary">Cài đặt</button>
+        <button id="btn-back-menu" type="button" class="btn-ghost">Về Menu chính</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Settings Dialog -->
+  <dialog id="settings-dialog" aria-labelledby="settings-title">
+    <div class="dialog-body">
+      <h2 id="settings-title">Cài đặt</h2>
+      <div class="setting-row">
+        <label for="setting-volume">Âm lượng tổng (<span id="volume-val">70%</span>)</label>
+        <input id="setting-volume" type="range" min="0" max="100" step="5" value="70" />
+      </div>
+      <div class="setting-row">
+        <label for="setting-sens">Độ nhạy xoay chuột (<span id="sens-val">0.40</span>)</label>
+        <input id="setting-sens" type="range" min="15" max="100" step="5" value="40" />
+      </div>
+      <form method="dialog" class="dialog-actions">
+        <button type="submit" value="done" class="btn-primary" autofocus>Lưu &amp; Đóng</button>
+      </form>
+    </div>
+  </dialog>
+
+  <!-- Result / Dawn Victory Dialog -->
+  <dialog id="result-dialog" aria-labelledby="result-dialog-title">
+    <div class="dialog-body">
+      <p class="eyebrow" id="result-eyebrow">Kết quả</p>
+      <h2 id="result-dialog-title">Kết quả Đêm</h2>
+      <p id="result-summary" class="dialog-lead"></p>
+      <dl class="result-grid">
+        <div>
+          <dt>Đèn đã thắp</dt>
+          <dd id="res-lanterns">0 / 5</dd>
+        </div>
+        <div>
+          <dt>Ngọn lửa còn</dt>
+          <dd id="res-flames">0 / 3</dd>
+        </div>
+        <div>
+          <dt>Điểm Đêm này</dt>
+          <dd id="res-score" class="gold-text">0</dd>
+        </div>
+        <div>
+          <dt>Tổng điểm chiến dịch</dt>
+          <dd id="res-total-score" class="gold-text">0</dd>
+        </div>
+      </dl>
+      <div class="dialog-actions">
+        <button id="btn-result-menu" type="button" class="btn-ghost">Về Menu</button>
+        <button id="btn-result-primary" type="button" class="btn-primary" autofocus>Tiếp tục</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script type="module" src="/src/client/main.ts"></script>
+</body>
+
 </html>
