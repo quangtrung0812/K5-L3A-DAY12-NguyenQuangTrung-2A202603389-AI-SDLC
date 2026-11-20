@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+set -e
+echo "[hook] Running full verification suite (npm test) before push..."
+npm test
