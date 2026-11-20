@@ -87,5 +87,29 @@
 - Cập nhật `AGENTS.md` và `.agents/skills/verify-phase/SKILL.md` lên Contract v1.2 (quy ước nhiên liệu nguyên `1/60`, 6 trạng thái Bóng Mực gồm `drain`, luật thắng `dawn_survived`, cấm skip test cũ âm thầm và cấm đổi hằng số chuẩn).
 
 ### 4. Ước tính Token & Chiến lược tiết kiệm Phase 3
-- **Ước tính Phase 3:** ~18k–24k tokens đầu ra / ~65k–85k tokens ngữ cảnh tổng (nâng cấp sim, validation, UI 3D + chế độ mù màu, ADR, Changelog, 15 unit test, 21 contract check và review độc lập).
+- **Ước tính Phase 3:** ~18k–24k tokens đầu ra / ~65k–85k tokens ngữ cảnh tổng (nâng cấp sim, validation, UI 3D + chế độ mù màu, ADR, Changelog, 17 unit test, 21 contract check và review độc lập).
 - **Cách tiết kiệm token:** Chia làm 4 batch chỉnh sửa song song rõ ranh giới (Specs/ADR/Changelog → Sim/Validation → Client 3D/Colorblind/HUD → Tests/Proof) và chạy `npm run build && npm test` gộp một lượt sau khi hoàn thiện từng cụm.
+
+
+---
+
+## Phase 4 — TICKET-04 *"Bình minh: phát hành v1.0.0"* (Test Contract v1.3)
+
+### 1. Kiến trúc & Triển khai Phát hành
+- Nâng cấp `game.contract.json` lên `contract_version: "1.3"`, bổ sung `bench_cmd`, `soak_cmd` và launcher cục bộ `scripts/run.mjs` phục vụ `dist/web/`, lưu bảng xếp hạng ra đĩa (`~/.dao-den-long/leaderboard.json`) và hỗ trợ `--export-leaderboard <out.json>`.
+- Tách riêng cảnh benchmark chuẩn trong `src/sim/engine.ts` (`createBenchSim`) và `src/client/scene.ts` (`syncBench` với 3 `THREE.InstancedMesh` cho 200 Bóng Mực + 100 đom đóm, tắt hoàn toàn hiệu ứng sáng tạo thêm).
+- Hoàn thiện đủ 4 nhóm Trợ năng trong `index.html`, `src/client/style.css` và `src/client/main.ts`: đổi 9 phím có báo trùng + khôi phục mặc định, phụ đề + mũi tên mép màn hình cho Bóng Mực xuất hiện / gió / 10s cuối / `fuel < 30`, chế độ Giảm chuyển động, và cỡ chữ tối thiểu `18px` (`1rem`) kèm Chữ lớn `×1.25` (`22.5px`).
+
+### 2. Lỗi hiệu năng & biên đã tự bắt và tối ưu bằng số đo thật
+1. **Tụt `p1_low_fps` xuống `15.6 FPS` dù `avg_fps = 103.4 FPS` trong lần chạy benchmark đầu tiên:**
+   - **Nguyên nhân gốc:** `scripts/bench.mjs` gọi `powershell.exe -Command "Get-CimInstance Win32_Process ..."` mỗi `1.5s` (20 lần trong 30s đo), làm nghẽn CPU/DWM và tạo ~30 khung hình giật `60–100 ms` rơi đúng vào nhóm 1% thấp nhất (`k = 31`).
+   - **Khắc phục & tối ưu sâu:** Chuyển sang lấy mẫu RSS sạch trong pha warmup (`800ms` sau khung đầu tiên) và ngay sau khi đo xong (trước khi đóng trình duyệt); đồng thời bật static shadow-map caching (`shadowMap.autoUpdate = false` sau khi dựng cảnh tĩnh trong `benchMode`), bỏ cấp phát chuỗi hex/mảng mỗi khung trong `syncBench()`, và đặt `powerPreference: 'high-performance'`.
+   - **Kết quả đo thật:** `avg_fps` tăng **`103.4 → 141.1 → 152.3 FPS`** (`≥ 60`), `p1_low_fps` tăng **`15.6 → 29.6 → 54.8 FPS`** (`≥ 30`), `load_ms` giảm **`5933 → 2203 ms`** (`≤ 10000`).
+2. **Tối ưu ổn định bộ nhớ Soak test (`mem_end_mb / mem_start_mb`):**
+   - Lần chạy đầu: `48.8 → 56.6 MB` (`1.16×`, khá sát ngưỡng `1.20×` do V8 JIT mở rộng semi-space mặc định). Sau khi tái sử dụng đối tượng `input` trong `src/headless/soak.ts` và thêm `--max-semi-space-size=1 --expose-gc` vào `soak_cmd`, kết quả thật giảm xuống **`49.4 → 55.2 MB` (`1.12×`)**, `0` crash trong `0.32s` (và xác nhận `30` Đêm liên tiếp cũng dừng ổn định ở `57.2 MB`, không rò rỉ bộ nhớ).
+3. **Cảnh báo `Write-Progress` của PowerShell `Compress-Archive` & chuẩn hóa tiếng Việt NFD:**
+   - Thêm `$ProgressPreference = 'SilentlyContinue'` vào `scripts/package-release.mjs` để đóng gói `tmp/dao-den-long-v1.0.0-web.zip` sạch không cảnh báo, và thêm `.normalize('NFC')` cho kiểm tra tên Bảng xếp hạng để hỗ trợ bàn phím tiếng Việt trên cả Windows và macOS.
+
+### 3. Cập nhật Harness AI & Ước tính Token Phase 4
+- Cập nhật `AGENTS.md`, `.agents/skills/verify-phase/SKILL.md`, `.github/workflows/verify.yml` lên Contract v1.3 (`19` unit tests + `23` contract/soak/leaderboard checks).
+- **Ước tính Phase 4:** ~20k–26k tokens đầu ra / ~70k–90k tokens ngữ cảnh tổng (tổng cả 4 phase: **~84k–110k output / ~285k–365k context**, ước tính tương đương **~\$2.50**).

@@ -4,6 +4,24 @@ Mọi thay đổi quan trọng theo từng Phase của dự án, bao gồm đầ
 
 ---
 
+## [1.0.0] — Phase 4: TICKET-04 *"Bình minh: phát hành v1.0.0"* (Test Contract v1.3)
+
+### Added (Non-functional, Accessibility, Leaderboard & Release)
+- **Test Contract v1.3 (`game.contract.json`):** Nâng `contract_version` lên `"1.3"`, bổ sung `bench_cmd` (`node scripts/bench.mjs`), `soak_cmd` (`node --max-semi-space-size=1 --expose-gc dist/headless/headless/soak.js`) và cập nhật `run_cmd` (`node scripts/run.mjs`) hỗ trợ xuất bảng xếp hạng. Toàn bộ luật và kiểm chứng Contract v1.0–v1.2 giữ nguyên 100%.
+- **Chế độ Benchmark chuẩn (`scripts/bench.mjs` + `createBenchSim` + `syncBench`):** Mở cửa sổ `1280×720` không toàn màn hình với cờ tắt VSync (`--disable-frame-rate-limit --disable-gpu-vsync`), chạy cảnh chuẩn Đêm 1 (`200` Bóng Mực `wander` instanced, `100` đom đóm instanced, `L1–L3` sáng `fuel=100`, tắt toàn bộ hiệu ứng sáng tạo thêm, camera bay vòng `r=30m, Y=15m` ngược chiều kim đồng hồ `15s/vòng`), khởi động `3s` + đo `--duration` giây và xuất `bench.json` đúng chuẩn v1.3.
+- **Soak test đa Đêm (`src/headless/soak.ts`):** Chạy `10` Đêm liên tiếp trong cùng tiến trình (Đêm `1 → 2 → 3` xoay vòng, seed `7 + i`, input ngẫu nhiên theo seed), đo `mem_start_mb`, `mem_end_mb`, `crashes`, `results`, `duration_s` và xuất `soak.json`.
+- **Bảng xếp hạng cục bộ (`src/sim/leaderboard.ts`, `scripts/run.mjs`, `index.html`, `src/client/main.ts`):**
+  - Cho phép nhập tên (`3–12` ký tự `[A-Za-z0-9_]` + hỗ trợ tiếng Việt có dấu) sau chiến thắng Đêm 3 hoặc sau khi thua ở bất kỳ Đêm nào; lưu Top 10 ra đĩa cục bộ (`~/.dao-den-long/leaderboard.json`), sắp xếp điểm giảm dần (bằng điểm ai đạt trước đứng trên).
+  - Màn hình Bảng xếp hạng từ Menu chính và lệnh CLI `node scripts/run.mjs --export-leaderboard out.json`.
+- **Trợ năng / Dễ tiếp cận (`index.html`, `src/client/style.css`, `src/client/main.ts`, `src/client/scene.ts`):**
+  - Đổi phím toàn bộ 9 hành động kèm phát hiện trùng phím & nút **Khôi phục mặc định** (lưu `localStorage`).
+  - Phụ đề & chỉ báo hình ảnh cho: Bóng Mực xuất hiện (kèm mũi tên chỉ hướng ở mép màn hình), gió sắp thổi, 10 giây cuối, và đèn `fuel < 30`.
+  - Chế độ **Giảm chuyển động** (tắt rung camera, giật FOV, nhún chạy và hiệu ứng chớp màn hình).
+  - Cỡ chữ UI tối thiểu **`18 px`** ở `1280×720` kèm tùy chọn **Chữ lớn (`×1.25` = `22.5 px`)**.
+- **Đóng gói phát hành v1.0.0:** Thêm [`LICENSE`](LICENSE) (MIT), [`CREDITS.md`](CREDITS.md), [`docs/notes/retro.md`](docs/notes/retro.md), script đóng gói [`scripts/package-release.mjs`](scripts/package-release.mjs), ảnh chụp màn hình thật và bộ bằng chứng `docs/proof/phase-4/`.
+
+---
+
 ## [0.3.0] — Phase 3: TICKET-03 *"Đèn cạn dầu"* (Test Contract v1.2)
 
 ### Breaking Changes (Phá vỡ tương thích so với v1.1 / Phase 2)
