@@ -20,5 +20,5 @@
 | P2-05 | Phase 2 Feature | Pause freezes sim_tick & time_left_s, emits paused/resumed | **PASS** | paused@11, frozen sim_tick=10 at wall ticks 20&30, resumed@41 |
 | P2-06 | Phase 2 Feature | Safe zone pushes inside shade out to >=6m within <=30 ticks (0 dmg) | **PASS** | 0 damage during pushout, dist@tick30=6.020m >= 6.0m |
 | DET | Determinism | Identical SHA-256 across 2 runs for Nights 1, 2, and 3 | **PASS** | N1=91dbecd6dc, N2=c7eb8878e1, N3=e690a0eb6e |
-| PERF | Performance | Full Night 3 headless (21,600 ticks) finishes in <= 30s | **PASS** | 21,600 ticks completed in 269 ms (limit: 30,000 ms) |
+| PERF | Performance | Full Night 3 headless (21,600 ticks) finishes in <= 30s | **PASS** | 21,600 ticks completed in 262 ms (limit: 30,000 ms) |
 | ERR | Error Handling | Invalid inputs/scenario/JSON -> exit 2; missing flag / bad night -> non-zero | **PASS** | bad_inputs=2, bad_scenario=2, malformed_json=2, bad_night=1 |
