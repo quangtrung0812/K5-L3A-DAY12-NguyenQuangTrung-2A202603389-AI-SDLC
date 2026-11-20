@@ -118,6 +118,21 @@ export class SoundEngine {
     this.playTone(base * 1.5, 0.65, 'sine', 0.14, 0.16);
   }
 
+  playRefuel(): void {
+    this.playTone(523.25, 0.16, 'sine', 0.12, 0, 659.25);
+    this.playTone(783.99, 0.22, 'triangle', 0.1, 0.06);
+  }
+
+  playLanternOut(): void {
+    this.playTone(392.0, 0.35, 'triangle', 0.14, 0, 196.0);
+    this.playTone(246.94, 0.42, 'sine', 0.11, 0.1, 146.83);
+  }
+
+  playDrainAlert(): void {
+    this.playTone(310, 0.14, 'sawtooth', 0.07, 0, 220);
+    this.playTone(260, 0.18, 'triangle', 0.08, 0.09, 180);
+  }
+
   playPulse(): void {
     this.playTone(680, 0.35, 'sine', 0.18, 0, 200);
     this.playTone(420, 0.3, 'triangle', 0.1, 0.03, 140);

@@ -1,14 +1,26 @@
 import * as THREE from 'three';
 import type { LanternIslandSim } from '../sim/engine.js';
-import { PALETTE, TUNING } from '../sim/tuning.js';
+import {
+  COLORBLIND_PALETTE,
+  FUEL_MAX_UNITS,
+  LOW_FUEL_UNITS,
+  PALETTE,
+  TUNING,
+} from '../sim/tuning.js';
 import type { NightNumber } from '../sim/types.js';
 
 interface LanternVisual {
   group: THREE.Group;
+  bulb: THREE.Mesh;
   bulbMat: THREE.MeshStandardMaterial;
+  tearGroup: THREE.Group;
   light: THREE.PointLight;
   safeRing: THREE.Mesh;
   progressOrbs: THREE.Mesh[];
+  fuelBarGroup: THREE.Group;
+  fuelBarFill: THREE.Mesh;
+  fuelBarFillMat: THREE.MeshBasicMaterial;
+  fuelWarnIcon: THREE.Mesh;
 }
 
 interface ShadeVisual {
@@ -17,9 +29,14 @@ interface ShadeVisual {
   phaseOffset: number;
   bodyMat: THREE.MeshStandardMaterial;
   hairMat: THREE.MeshStandardMaterial;
+  eyeUpperMat: THREE.MeshBasicMaterial;
   chaseRing: THREE.Mesh;
+  chaseRingMat: THREE.MeshBasicMaterial;
+  drainBeam: THREE.Mesh;
+  drainBeamMat: THREE.MeshBasicMaterial;
   halo: THREE.Mesh;
   spawnRing: THREE.Mesh;
+  spawnRingMat: THREE.MeshBasicMaterial;
   legs: THREE.Group[];
   ribbonTail: THREE.Group;
 }
@@ -97,6 +114,7 @@ export class LanternIslandRenderer {
   private dustCooldown = 0;
   private runCycle = 0;
   private elapsed = 0;
+  private colorblind = false;
 
   constructor(container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -187,6 +205,19 @@ export class LanternIslandRenderer {
     }
   }
 
+  setColorblind(enabled: boolean): void {
+    this.colorblind = enabled;
+  }
+
+  triggerPickupSparkle(pos: [number, number, number]): void {
+    for (let i = 0; i < 3; i++) {
+      this.spawnDustPuff(
+        [pos[0] + (i - 1) * 0.22, pos[1] + 0.55 + i * 0.14, pos[2] + (1 - i) * 0.18],
+        true,
+      );
+    }
+  }
+
   triggerPulseEffect(pos: [number, number, number]): void {
     const geom = new THREE.RingGeometry(0.35, 0.75, 48);
     geom.rotateX(-Math.PI / 2);
@@ -202,18 +233,24 @@ export class LanternIslandRenderer {
     this.pulseWaves.push({ mesh, age: 0, maxAge: 0.42 });
   }
 
-  /** Projects nearest unlit lantern for off-screen HUD indicator arrow. */
+  /** Projects nearest urgent lantern (low-fuel < 30 or unlit) for off-screen HUD indicator arrow. */
   getOffscreenLanternIndicator(
     sim: LanternIslandSim,
     viewportW: number,
     viewportH: number,
   ): { visible: boolean; x: number; y: number; angleDeg: number; label: string } {
-    let nearest: { id: string; pos: [number, number, number]; dist: number } | null = null;
+    let nearest: { id: string; pos: [number, number, number]; dist: number; urgent: boolean } | null = null;
     for (const l of sim.lanterns) {
-      if (l.lit) continue;
+      const isWeak = l.lit && l.fuelUnits < LOW_FUEL_UNITS;
+      if (l.lit && !isWeak) continue;
       const d = Math.hypot(l.pos[0] - sim.player.pos[0], l.pos[2] - sim.player.pos[2]);
-      if (!nearest || d < nearest.dist) {
-        nearest = { id: l.id, pos: l.pos, dist: d };
+      const urgent = isWeak;
+      if (
+        !nearest ||
+        (urgent && !nearest.urgent) ||
+        (urgent === nearest.urgent && d < nearest.dist)
+      ) {
+        nearest = { id: l.id, pos: l.pos, dist: d, urgent };
       }
     }
     if (!nearest) return { visible: false, x: 0, y: 0, angleDeg: 0, label: '' };
@@ -250,7 +287,9 @@ export class LanternIslandRenderer {
       x,
       y,
       angleDeg: (angleRad * 180) / Math.PI + 90,
-      label: `${nearest.id} · ${Math.round(nearest.dist)}m`,
+      label: nearest.urgent
+        ? `⚠ ${nearest.id} · ${Math.round(nearest.dist)}m`
+        : `${nearest.id} · ${Math.round(nearest.dist)}m`,
     };
   }
 
@@ -342,22 +381,25 @@ export class LanternIslandRenderer {
       this.camera.updateProjectionMatrix();
     }
 
-    // Client-only Firefly Compass pointing toward nearest unlit lantern
-    let nearestUnlit: [number, number, number] | null = null;
+    // Client-only Firefly Compass pointing toward nearest weak (fuel < 30) or unlit lantern
+    let nearestTarget: [number, number, number] | null = null;
+    let bestUrgent = false;
     let bestD = Infinity;
     for (const l of sim.lanterns) {
-      if (l.lit) continue;
+      const isWeak = l.lit && l.fuelUnits < LOW_FUEL_UNITS;
+      if (l.lit && !isWeak) continue;
       const d = Math.hypot(l.pos[0] - sim.player.pos[0], l.pos[2] - sim.player.pos[2]);
-      if (d < bestD) {
+      if (!nearestTarget || (isWeak && !bestUrgent) || (isWeak === bestUrgent && d < bestD)) {
         bestD = d;
-        nearestUnlit = l.pos;
+        bestUrgent = isWeak;
+        nearestTarget = l.pos;
       }
     }
-    if (nearestUnlit && visiblePlayer) {
+    if (nearestTarget && visiblePlayer) {
       this.compassArrow.visible = true;
       this.compassArrow.rotation.y = Math.atan2(
-        nearestUnlit[0] - sim.player.pos[0],
-        nearestUnlit[2] - sim.player.pos[2],
+        nearestTarget[0] - sim.player.pos[0],
+        nearestTarget[2] - sim.player.pos[2],
       );
     } else {
       this.compassArrow.visible = false;
@@ -382,7 +424,10 @@ export class LanternIslandRenderer {
     this.camera.position.lerp(targetCamPos, Math.min(1, dt * 15));
     this.camera.lookAt(lookX, lookY + focusY, lookZ);
 
-    // 4. Lanterns
+    // 4. Lanterns (Phase 3: 20% squashed + torn paper when unlit; floating fuel bar + 1Hz blink when fuel < 30)
+    const blink1Hz = Math.sin(this.elapsed * Math.PI * 2) >= 0;
+    const dangerHex = this.colorblind ? COLORBLIND_PALETTE.uiDanger : PALETTE.uiDanger;
+
     for (const lantern of sim.lanterns) {
       let vis = this.lanternVisuals.get(lantern.id);
       if (!vis) {
@@ -392,15 +437,38 @@ export class LanternIslandRenderer {
       }
       vis.group.position.set(lantern.pos[0], lantern.pos[1], lantern.pos[2]);
 
-      const ratio = lantern.lit ? 1 : lantern.deposited / Math.max(1, TUNING.lantern_cost);
+      const requiredCost = lantern.everLit ? TUNING.relight_cost : TUNING.lantern_cost;
+      const ratio = lantern.lit ? 1 : lantern.deposited / Math.max(1, requiredCost);
+      const isLowFuel = lantern.lit && lantern.fuelUnits < LOW_FUEL_UNITS;
+      const fuelRatio = Math.max(0, Math.min(1, lantern.fuelUnits / FUEL_MAX_UNITS));
+
       if (lantern.lit) {
-        const pulse = 0.92 + Math.sin(this.elapsed * 3.5 + lantern.pos[0]) * 0.08;
-        vis.bulbMat.color.set(PALETTE.lanternCore);
+        // Inflated full glowing lantern shape; paper tears hidden
+        vis.bulb.scale.set(1.0, 1.12, 1.0);
+        vis.tearGroup.visible = false;
+
+        const lowBlinkMul = isLowFuel ? (blink1Hz ? 1.0 : 0.22) : 1.0;
+        const pulse = (0.92 + Math.sin(this.elapsed * 3.5 + lantern.pos[0]) * 0.08) * lowBlinkMul;
+        vis.bulbMat.color.set(isLowFuel && !blink1Hz ? dangerHex : PALETTE.lanternCore);
         vis.bulbMat.emissive.set(PALETTE.lanternLit);
         vis.bulbMat.emissiveIntensity = 2.6 * pulse;
         vis.light.intensity = 20 * pulse;
-        vis.safeRing.visible = true;
+        vis.safeRing.visible = sim.isLanternSafeActive(lantern);
+
+        // Floating billboard fuel bar above lit lantern (blinks at 1 Hz when fuel < 30)
+        vis.fuelBarGroup.visible = !isLowFuel || blink1Hz;
+        vis.fuelBarGroup.lookAt(this.camera.position);
+        const barW = 1.6;
+        const clampedFill = Math.max(0.02, fuelRatio);
+        vis.fuelBarFill.scale.x = clampedFill;
+        vis.fuelBarFill.position.x = -barW * 0.5 * (1 - clampedFill);
+        vis.fuelBarFillMat.color.set(isLowFuel ? dangerHex : PALETTE.goldAccent);
+        vis.fuelWarnIcon.visible = isLowFuel;
       } else {
+        // Unlit silhouette distinguishable without color: squashed 20% vertically + torn paper rips!
+        vis.bulb.scale.set(1.06, 0.8, 1.06);
+        vis.tearGroup.visible = true;
+
         vis.bulbMat.color
           .set(PALETTE.lanternUnlit)
           .lerp(new THREE.Color(PALETTE.lanternLit), ratio * 0.65);
@@ -408,17 +476,21 @@ export class LanternIslandRenderer {
         vis.bulbMat.emissiveIntensity = ratio * 1.1;
         vis.light.intensity = ratio * 5.0;
         vis.safeRing.visible = false;
+        vis.fuelBarGroup.visible = false;
       }
 
-      const activeOrbs = Math.ceil((lantern.lit ? 10 : lantern.deposited) / 2);
+      const activeOrbs = lantern.lit
+        ? 5
+        : Math.ceil((lantern.deposited / Math.max(1, requiredCost)) * 5);
       vis.progressOrbs.forEach((orb, idx) => {
         orb.visible = idx < activeOrbs;
         orb.position.y = 1.65 + Math.sin(this.elapsed * 3 + idx) * 0.09;
       });
     }
 
-    // 5. Motes (Fireflies with fluttering wings)
+    // 5. Motes (Fireflies with fluttering wings & subtle client-only visual pull when Mây is nearby)
     const activeMoteIds = new Set<string>();
+    const hasCarryRoom = sim.player.carried < sim.getCarryCapacity() && sim.player.fallRespawnTicks === 0;
     for (const mote of sim.motes) {
       activeMoteIds.add(mote.id);
       let vis = this.moteVisuals.get(mote.id);
@@ -427,11 +499,26 @@ export class LanternIslandRenderer {
         this.moteVisuals.set(mote.id, vis);
         this.scene.add(vis.group);
       }
+      let rx = mote.pos[0];
+      let rz = mote.pos[2];
+      let flapRate = 22;
+      if (hasCarryRoom) {
+        const dx = sim.player.pos[0] - mote.pos[0];
+        const dz = sim.player.pos[2] - mote.pos[2];
+        const d = Math.hypot(dx, dz);
+        // Purely visual attraction lean inside 2.4m (does NOT alter sim pickup_radius = 1.0m)
+        if (d < 2.4 && d > 0.05) {
+          const pull = Math.pow(1 - d / 2.4, 1.5) * 0.55;
+          rx += dx * pull;
+          rz += dz * pull;
+          flapRate = 34;
+        }
+      }
       const bob =
         mote.pos[1] + 0.8 + Math.sin(this.elapsed * 4.0 + mote.pos[0] * 0.7 + mote.pos[2] * 0.5) * 0.22;
-      vis.group.position.set(mote.pos[0], bob, mote.pos[2]);
+      vis.group.position.set(rx, bob, rz);
       vis.group.rotation.y = this.elapsed * 1.8;
-      const flap = Math.sin(this.elapsed * 22 + mote.pos[0]) * 0.55;
+      const flap = Math.sin(this.elapsed * flapRate + mote.pos[0]) * 0.55;
       vis.wingLeft.rotation.z = 0.25 + flap;
       vis.wingRight.rotation.z = -0.25 - flap;
       vis.group.visible =
@@ -444,8 +531,9 @@ export class LanternIslandRenderer {
       }
     }
 
-    // 6. Shades (Doro chibi quadruped across all 5 standardized Contract v1.1 states)
+    // 6. Shades (Doro chibi quadruped across all 6 Contract v1.2 states + Colorblind #00B3FF override)
     const activeShadeIds = new Set<string>();
+    const shadeAccentHex = this.colorblind ? COLORBLIND_PALETTE.shadeEdge : PALETTE.shadeEdge;
     for (const shade of sim.shades) {
       activeShadeIds.add(shade.id);
       let vis = this.shadeVisuals.get(shade.id);
@@ -459,58 +547,84 @@ export class LanternIslandRenderer {
       const isStunned = shade.state === 'stunned';
       const isChase = shade.state === 'chase';
       const isRecoil = shade.state === 'recoil';
+      const isDrain = shade.state === 'drain';
 
-      const trotRate = isChase ? 16 : isStunned ? 2.5 : 9;
+      const trotRate = isChase ? 16 : isDrain ? 12 : isStunned ? 2.5 : 9;
       const trotPhase = this.elapsed * trotRate + vis.phaseOffset;
-      const hopY = isSpawning || isStunned ? 0 : Math.abs(Math.sin(trotPhase)) * (isChase ? 0.16 : 0.08);
+      const hopY =
+        isSpawning || isStunned || isDrain
+          ? 0
+          : Math.abs(Math.sin(trotPhase)) * (isChase ? 0.16 : 0.08);
       const groundY = shade.pos[1];
 
       vis.group.position.set(shade.pos[0], groundY, shade.pos[2]);
-      vis.group.lookAt(sim.player.pos[0], groundY, sim.player.pos[2]);
+      if (isDrain && shade.targetLanternId) {
+        const targetLantern = sim.lanterns.find((l) => l.id === shade.targetLanternId);
+        if (targetLantern) {
+          vis.group.lookAt(targetLantern.pos[0], groundY, targetLantern.pos[2]);
+        } else {
+          vis.group.lookAt(sim.player.pos[0], groundY, sim.player.pos[2]);
+        }
+      } else {
+        vis.group.lookAt(sim.player.pos[0], groundY, sim.player.pos[2]);
+      }
 
       const spawningScale = isSpawning ? 0.42 + Math.sin(this.elapsed * 18) * 0.14 : 1;
       vis.inner.scale.setScalar(spawningScale);
       vis.inner.position.y = hopY;
+
+      // Apply exact Contract v1.2 colorblind palette (#7A3CFF -> #00B3FF) to eyes & rims
+      vis.eyeUpperMat.color.set(shadeAccentHex);
+      vis.chaseRingMat.color.set(shadeAccentHex);
+      vis.spawnRingMat.color.set(shadeAccentHex);
+      vis.drainBeamMat.color.set(shadeAccentHex);
 
       vis.spawnRing.visible = isSpawning;
       if (isSpawning) {
         vis.spawnRing.rotation.z = this.elapsed * 6;
       }
 
-      vis.chaseRing.visible = isChase;
-      if (isChase) {
-        const pulse = 1 + Math.sin(this.elapsed * 12) * 0.1;
+      vis.chaseRing.visible = isChase || isDrain;
+      if (isChase || isDrain) {
+        const pulse = 1 + Math.sin(this.elapsed * (isDrain ? 16 : 12)) * 0.12;
         vis.chaseRing.scale.setScalar(pulse);
         vis.chaseRing.rotation.z = -this.elapsed * 4;
       }
 
+      vis.drainBeam.visible = isDrain;
+      if (isDrain) {
+        vis.drainBeam.scale.set(1, 0.85 + Math.sin(this.elapsed * 18) * 0.25, 1);
+      }
+
       // Expressive Doro state posture
-      vis.inner.rotation.x = isChase ? 0.14 : isRecoil ? -0.3 : 0;
+      vis.inner.rotation.x = isChase ? 0.14 : isDrain ? -0.24 : isRecoil ? -0.3 : 0;
       vis.inner.rotation.z = isStunned
         ? Math.sin(this.elapsed * 10) * 0.28
         : isChase
           ? Math.sin(trotPhase) * 0.08
-          : 0;
+          : isDrain
+            ? Math.sin(this.elapsed * 14) * 0.06
+            : 0;
 
       // Subtle tint feedback while preserving unmistakable white body + pink hair Doro look
       vis.bodyMat.color.set(isStunned ? '#dcd5f2' : '#fcfbfd');
-      vis.bodyMat.emissive.set(isChase ? PALETTE.shadeEdge : isStunned ? PALETTE.shadeStunned : '#2b1c36');
-      vis.bodyMat.emissiveIntensity = isChase ? 0.24 : isStunned ? 0.35 : 0.08;
+      vis.bodyMat.emissive.set(isChase || isDrain ? shadeAccentHex : isStunned ? PALETTE.shadeStunned : '#2b1c36');
+      vis.bodyMat.emissiveIntensity = isDrain ? 0.34 : isChase ? 0.24 : isStunned ? 0.35 : 0.08;
       vis.hairMat.color.set(isStunned ? '#cfa8dc' : '#f9a5c4');
-      vis.hairMat.emissive.set(isChase ? '#d84f80' : '#4a1c36');
-      vis.hairMat.emissiveIntensity = isChase ? 0.28 : 0.1;
+      vis.hairMat.emissive.set(isChase || isDrain ? shadeAccentHex : '#4a1c36');
+      vis.hairMat.emissiveIntensity = isDrain ? 0.32 : isChase ? 0.22 : 0.1;
 
       vis.halo.visible = isStunned;
       if (isStunned) vis.halo.rotation.z = this.elapsed * 6;
 
       // Scampering 4 stubby legs (diagonal trot gait) & fluttering white ribbon behind rose bun
-      const legAmp = isSpawning || isStunned ? 0.08 : isChase ? 0.72 : 0.42;
+      const legAmp = isSpawning || isStunned || isDrain ? 0.08 : isChase ? 0.72 : 0.42;
       const swing = Math.sin(trotPhase) * legAmp;
       if (vis.legs[0]) vis.legs[0].rotation.x = swing; // front-left
       if (vis.legs[1]) vis.legs[1].rotation.x = -swing; // front-right
       if (vis.legs[2]) vis.legs[2].rotation.x = -swing; // back-left
       if (vis.legs[3]) vis.legs[3].rotation.x = swing; // back-right
-      vis.ribbonTail.rotation.y = Math.sin(this.elapsed * (isChase ? 14 : 6) + vis.phaseOffset) * 0.22;
+      vis.ribbonTail.rotation.y = Math.sin(this.elapsed * (isChase || isDrain ? 14 : 6) + vis.phaseOffset) * 0.22;
     }
     for (const [id, vis] of this.shadeVisuals.entries()) {
       if (!activeShadeIds.has(id)) {
@@ -1537,7 +1651,33 @@ export class LanternIslandRenderer {
     });
     const bulb = new THREE.Mesh(new THREE.OctahedronGeometry(0.68, 1), bulbMat);
     bulb.position.y = 3.85;
+    bulb.scale.set(1.06, 0.8, 1.06); // Squashed 20% when unlit (non-color silhouette)
     group.add(bulb);
+
+    // Visible jagged paper tears & hanging ripped strips when unlit (non-color distinction!)
+    const tearGroup = new THREE.Group();
+    tearGroup.position.y = 3.85;
+    const tearDarkMat = new THREE.MeshBasicMaterial({ color: '#1b1d28', side: THREE.DoubleSide });
+    const tearFlapMat = new THREE.MeshStandardMaterial({
+      color: '#888c9c',
+      roughness: 0.9,
+      side: THREE.DoubleSide,
+    });
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2 + 0.35;
+      const rip = new THREE.Mesh(new THREE.PlaneGeometry(0.24, 0.54), tearDarkMat);
+      rip.position.set(Math.cos(a) * 0.69, -0.02, Math.sin(a) * 0.69);
+      rip.rotation.y = -a + Math.PI / 2;
+      rip.rotation.z = (i % 2 === 0 ? 1 : -1) * 0.24;
+      tearGroup.add(rip);
+
+      const flap = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.32, 3), tearFlapMat);
+      flap.position.set(Math.cos(a) * 0.74, -0.22, Math.sin(a) * 0.74);
+      flap.rotation.y = -a;
+      flap.rotation.x = Math.PI - 0.35;
+      tearGroup.add(flap);
+    }
+    group.add(tearGroup);
 
     const roof = new THREE.Mesh(
       new THREE.ConeGeometry(1.25, 0.85, 8),
@@ -1546,6 +1686,30 @@ export class LanternIslandRenderer {
     roof.position.y = 4.65;
     roof.castShadow = true;
     group.add(roof);
+
+    // Floating billboard fuel bar above lit lanterns
+    const fuelBarGroup = new THREE.Group();
+    fuelBarGroup.position.y = 5.45;
+    fuelBarGroup.visible = false;
+    const fuelBg = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.74, 0.26),
+      new THREE.MeshBasicMaterial({ color: '#0e1430', transparent: true, opacity: 0.85, side: THREE.DoubleSide }),
+    );
+    fuelBarGroup.add(fuelBg);
+
+    const fuelBarFillMat = new THREE.MeshBasicMaterial({ color: PALETTE.goldAccent, side: THREE.DoubleSide });
+    const fuelBarFill = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 0.16), fuelBarFillMat);
+    fuelBarFill.position.z = 0.015;
+    fuelBarGroup.add(fuelBarFill);
+
+    const fuelWarnIcon = new THREE.Mesh(
+      new THREE.ConeGeometry(0.18, 0.3, 3),
+      new THREE.MeshBasicMaterial({ color: '#ffffff' }),
+    );
+    fuelWarnIcon.position.set(0, 0.34, 0.02);
+    fuelWarnIcon.visible = false;
+    fuelBarGroup.add(fuelWarnIcon);
+    group.add(fuelBarGroup);
 
     const light = new THREE.PointLight(PALETTE.lanternLit, 0, 22, 1.4);
     light.position.y = 4.0;
@@ -1579,7 +1743,19 @@ export class LanternIslandRenderer {
       progressOrbs.push(orb);
     }
 
-    return { group, bulbMat, light, safeRing, progressOrbs };
+    return {
+      group,
+      bulb,
+      bulbMat,
+      tearGroup,
+      light,
+      safeRing,
+      progressOrbs,
+      fuelBarGroup,
+      fuelBarFill,
+      fuelBarFillMat,
+      fuelWarnIcon,
+    };
   }
 
   private createMoteVisual(): MoteVisual {
@@ -1652,7 +1828,9 @@ export class LanternIslandRenderer {
       side: THREE.DoubleSide,
     });
     const inkMat = new THREE.MeshBasicMaterial({ color: '#1b1420' });
-    const eyeUpperMat = new THREE.MeshBasicMaterial({ color: '#8d72cf' });
+    const eyeUpperMat = new THREE.MeshBasicMaterial({
+      color: this.colorblind ? COLORBLIND_PALETTE.shadeEdge : PALETTE.shadeEdge,
+    });
     const eyeLowerMat = new THREE.MeshBasicMaterial({ color: '#ccc0f8' });
     const glintMat = new THREE.MeshBasicMaterial({ color: '#ffffff' });
     const blushMat = new THREE.MeshBasicMaterial({ color: '#f9b4c2' });
@@ -1864,35 +2042,59 @@ export class LanternIslandRenderer {
     halo.visible = false;
     group.add(halo);
 
-    const chaseRing = new THREE.Mesh(
-      new THREE.RingGeometry(0.68, 0.92, 24),
-      new THREE.MeshBasicMaterial({
-        color: PALETTE.shadeEdge,
-        transparent: true,
-        opacity: 0.65,
-        side: THREE.DoubleSide,
-      }),
-    );
+    const chaseRingMat = new THREE.MeshBasicMaterial({
+      color: this.colorblind ? COLORBLIND_PALETTE.shadeEdge : PALETTE.shadeEdge,
+      transparent: true,
+      opacity: 0.65,
+      side: THREE.DoubleSide,
+    });
+    const chaseRing = new THREE.Mesh(new THREE.RingGeometry(0.68, 0.92, 24), chaseRingMat);
     chaseRing.rotation.x = -Math.PI / 2;
     chaseRing.position.y = 0.06;
     chaseRing.visible = false;
     group.add(chaseRing);
 
-    const spawnRing = new THREE.Mesh(
-      new THREE.RingGeometry(0.65, 1.05, 24),
-      new THREE.MeshBasicMaterial({
-        color: '#f48fb1',
-        transparent: true,
-        opacity: 0.78,
-        side: THREE.DoubleSide,
-      }),
-    );
+    // Siphon energy beam upward toward weak lantern during drain state
+    const drainBeamMat = new THREE.MeshBasicMaterial({
+      color: this.colorblind ? COLORBLIND_PALETTE.shadeEdge : PALETTE.shadeEdge,
+      transparent: true,
+      opacity: 0.58,
+    });
+    const drainBeam = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.22, 2.8, 8), drainBeamMat);
+    drainBeam.position.set(0, 1.85, 0.85);
+    drainBeam.rotation.x = 0.45;
+    drainBeam.visible = false;
+    group.add(drainBeam);
+
+    const spawnRingMat = new THREE.MeshBasicMaterial({
+      color: this.colorblind ? COLORBLIND_PALETTE.shadeEdge : PALETTE.shadeEdge,
+      transparent: true,
+      opacity: 0.78,
+      side: THREE.DoubleSide,
+    });
+    const spawnRing = new THREE.Mesh(new THREE.RingGeometry(0.65, 1.05, 24), spawnRingMat);
     spawnRing.rotation.x = -Math.PI / 2;
     spawnRing.position.y = 0.08;
     spawnRing.visible = false;
     group.add(spawnRing);
 
-    return { group, inner, phaseOffset, bodyMat, hairMat, chaseRing, halo, spawnRing, legs, ribbonTail };
+    return {
+      group,
+      inner,
+      phaseOffset,
+      bodyMat,
+      hairMat,
+      eyeUpperMat,
+      chaseRing,
+      chaseRingMat,
+      drainBeam,
+      drainBeamMat,
+      halo,
+      spawnRing,
+      spawnRingMat,
+      legs,
+      ribbonTail,
+    };
   }
 
   private createDrifterVisual(drifterId: string): DrifterVisual {

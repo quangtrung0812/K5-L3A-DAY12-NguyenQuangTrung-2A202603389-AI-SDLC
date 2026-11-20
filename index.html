@@ -31,13 +31,16 @@
         <div id="hud-wind-badge" class="status-badge wind-badge" hidden>
           Gió mạnh sắp tới!
         </div>
+        <div id="hud-lowfuel-badge" class="status-badge lowfuel-badge" hidden>
+          ⚠ Đèn yếu dầu!
+        </div>
       </div>
 
       <!-- Top-center: Clock mm:ss (red & blinking <= 30s) -->
       <div class="hud-center">
         <div id="hud-clock-box" class="hud-clock" aria-label="Thời gian còn lại">
           <span class="pill-label">Bình minh</span>
-          <span id="hud-time" class="clock-value">05:00</span>
+          <span class="clock-value"><span id="hud-clock-warn" hidden>⚠ </span><span id="hud-time">04:00</span></span>
         </div>
       </div>
 
@@ -117,7 +120,7 @@
       <h1 id="menu-title" class="menu-heading">Đảo Đèn Lồng</h1>
       <p class="dialog-lead">
         Cùng <strong>Mây</strong> vượt qua 3 đêm — <strong>Đảo Bến</strong>, <strong>Đảo Cau</strong> và
-        <strong>Đảo Chuông</strong> — thu thập đom đóm, thắp sáng các Đèn Lồng Lớn trước khi bình minh lên.
+        <strong>Đảo Chuông</strong> — thắp sáng, châm dầu và <strong>giữ đảo sáng tới bình minh</strong> trước đàn Bóng Mực hút dầu!
       </p>
       <div class="menu-buttons">
         <button id="btn-start-campaign" type="button" class="btn-primary" autofocus>
@@ -128,7 +131,7 @@
           <button type="button" class="btn-secondary" data-night="2">Đêm 2: Đảo Cau</button>
           <button type="button" class="btn-secondary" data-night="3">Đêm 3: Đảo Chuông</button>
         </div>
-        <button id="btn-open-settings-menu" type="button" class="btn-ghost">Cài đặt âm thanh &amp; chuột</button>
+        <button id="btn-open-settings-menu" type="button" class="btn-ghost">Cài đặt (Âm thanh, chuột &amp; mù màu)</button>
       </div>
     </div>
   </dialog>
@@ -171,6 +174,12 @@
       <div class="setting-row">
         <label for="setting-sens">Độ nhạy xoay chuột (<span id="sens-val">0.40</span>)</label>
         <input id="setting-sens" type="range" min="15" max="100" step="5" value="40" />
+      </div>
+      <div class="setting-row">
+        <label class="setting-toggle" for="setting-colorblind">
+          <input id="setting-colorblind" type="checkbox" />
+          <span>Bảng màu dễ phân biệt (Hỗ trợ mù màu: Bóng Mực #00B3FF, cảnh báo #FFFFFF + ⚠)</span>
+        </label>
       </div>
       <form method="dialog" class="dialog-actions">
         <button type="submit" value="done" class="btn-primary" autofocus>Lưu &amp; Đóng</button>

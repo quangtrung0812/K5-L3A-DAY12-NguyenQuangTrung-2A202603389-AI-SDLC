@@ -3,7 +3,9 @@ import { createDefaultInput, distXZ, LanternIslandSim } from '../sim/engine.js';
 import {
   DASH_COOLDOWN_TICKS,
   DT,
+  FUEL_MAX_UNITS,
   INTERACT_HEIGHT_TOLERANCE,
+  LOW_FUEL_UNITS,
   PULSE_COOLDOWN_TICKS,
   TICK_RATE,
   TUNING,
@@ -15,6 +17,7 @@ import { LanternIslandRenderer } from './scene.js';
 interface UserSettings {
   volume: number; // 0..100
   sensitivity: number; // 0.15..1.0
+  colorblind: boolean;
 }
 
 const SETTINGS_KEY = 'dao_den_long_settings_v1';
@@ -30,12 +33,13 @@ function loadSettings(): UserSettings {
           typeof parsed.sensitivity === 'number'
             ? Math.max(0.15, Math.min(1.0, parsed.sensitivity))
             : 0.4,
+        colorblind: typeof parsed.colorblind === 'boolean' ? parsed.colorblind : false,
       };
     }
   } catch {
     // ignore storage errors
   }
-  return { volume: 70, sensitivity: 0.4 };
+  return { volume: 70, sensitivity: 0.4, colorblind: false };
 }
 
 function saveSettings(s: UserSettings): void {
@@ -52,7 +56,9 @@ const hudFlames = document.getElementById('hud-flames')!;
 const hudCharmBadge = document.getElementById('hud-charm-badge')!;
 const hudCharmTime = document.getElementById('hud-charm-time')!;
 const hudWindBadge = document.getElementById('hud-wind-badge')!;
+const hudLowFuelBadge = document.getElementById('hud-lowfuel-badge')!;
 const hudClockBox = document.getElementById('hud-clock-box')!;
+const hudClockWarn = document.getElementById('hud-clock-warn')!;
 const hudTime = document.getElementById('hud-time')!;
 const hudLanterns = document.getElementById('hud-lanterns')!;
 const hudScore = document.getElementById('hud-score')!;
@@ -93,6 +99,7 @@ const volumeSlider = document.getElementById('setting-volume') as HTMLInputEleme
 const volumeVal = document.getElementById('volume-val')!;
 const sensSlider = document.getElementById('setting-sens') as HTMLInputElement;
 const sensVal = document.getElementById('sens-val')!;
+const colorblindCheckbox = document.getElementById('setting-colorblind') as HTMLInputElement;
 
 const resultDialog = document.getElementById('result-dialog') as HTMLDialogElement;
 const resultEyebrow = document.getElementById('result-eyebrow')!;
@@ -105,14 +112,25 @@ const resTotalScore = document.getElementById('res-total-score')!;
 const btnResultMenu = document.getElementById('btn-result-menu') as HTMLButtonElement;
 const btnResultPrimary = document.getElementById('btn-result-primary') as HTMLButtonElement;
 
-// Build 10-slot mote bar
+// Build dynamic mote bar (10..20 slots as successful_lights grows)
 const moteSlotEls: HTMLDivElement[] = [];
-for (let i = 0; i < TUNING.carry_capacity; i++) {
-  const slot = document.createElement('div');
-  slot.className = 'mote-slot';
-  moteSlotsRoot.appendChild(slot);
-  moteSlotEls.push(slot);
+let renderedCapacity = 0;
+
+function ensureMoteSlots(cap: number): void {
+  if (renderedCapacity === cap) return;
+  renderedCapacity = cap;
+  moteSlotsRoot.style.setProperty('--cap', String(cap));
+  while (moteSlotEls.length < cap) {
+    const slot = document.createElement('div');
+    slot.className = 'mote-slot';
+    moteSlotsRoot.appendChild(slot);
+    moteSlotEls.push(slot);
+  }
+  for (let i = 0; i < moteSlotEls.length; i++) {
+    moteSlotEls[i].hidden = i >= cap;
+  }
 }
+ensureMoteSlots(TUNING.carry_capacity);
 
 const settings = loadSettings();
 const sound = new SoundEngine();
@@ -121,8 +139,14 @@ volumeSlider.value = String(settings.volume);
 volumeVal.textContent = `${settings.volume}%`;
 sensSlider.value = String(Math.round(settings.sensitivity * 100));
 sensVal.textContent = settings.sensitivity.toFixed(2);
+colorblindCheckbox.checked = settings.colorblind;
 
 const renderer = new LanternIslandRenderer(canvasRoot);
+function applyColorblindMode(enabled: boolean): void {
+  document.body.classList.toggle('colorblind', enabled);
+  renderer.setColorblind(enabled);
+}
+applyColorblindMode(settings.colorblind);
 
 let currentNight: NightNumber = 1;
 let runSeedCounter = 1;
@@ -236,19 +260,19 @@ function startNight(night: NightNumber, resetCampaignScore: boolean): void {
 
   const tipsByNight: Record<NightNumber, string[]> = {
     1: [
-      'Thắp sáng 5 Đèn Lồng Lớn (10 đom đóm mỗi đèn) trong 5 phút.',
-      'Nhấn Shift để Lướt nhanh 14 m/s; nhấn Q (3 đom đóm) để Tỏa Sáng đẩy lùi Bóng Mực.',
-      'Cẩn thận mép đảo — rơi xuống biển mây sẽ mất 1 Ngọn Lửa và toàn bộ đom đóm đang mang!',
+      'Đèn sáng hao 1 dầu/giây — hãy châm dầu (+10 dầu/đom đóm) và giữ ít nhất 3/5 đèn sáng tới bình minh (4 phút)!',
+      'Đèn dưới 30 dầu mất vùng an toàn 6m và bị Bóng Mực hút 5 dầu/giây; Tỏa Sáng (Q) trúng con đang hút nhận +15 điểm!',
+      'Mỗi lần thắp đèn thành công tăng sức chứa thêm +2 (tối đa 20); đèn đã từng sáng chỉ tốn 5 đom đóm để thắp lại!',
     ],
     2: [
-      'Thắp sáng 6 Đèn Lồng trên hai hòn đảo nối bằng cầu tre và 2 bục nhảy gió.',
+      'Giữ tối thiểu 4/6 Đèn Lồng sáng tới bình minh (4 phút 30 giây) trên hai hòn đảo nối bằng cầu tre và 2 bục gió.',
       'Nhặt Bùa Gió đỏ viền vàng trên cầu tre để tăng tốc 7.2 m/s và Lướt không hồi chiêu trong 10 giây.',
       'Gió Lạc bay nhanh và cướp đom đóm khi bạn mang ≥ 5 đốm — dùng Tỏa Sáng để bắt nó nhả lại!',
     ],
     3: [
-      'Thắp sáng 7 Đèn Lồng trên Đảo Chuông 3 tầng — leo 2 con dốc và dùng bục nhảy lên đỉnh Tháp Chuông.',
+      'Giữ tối thiểu 5/7 Đèn Lồng sáng tới bình minh (5 phút) trên Đảo Chuông 3 tầng — leo 2 con dốc và dùng bục nhảy lên đỉnh.',
       'Mỗi 30 giây có một cơn gió mạnh đẩy 2 m/s trong 5 giây (báo trước 2 giây bằng lá vàng bay).',
-      'Bóng Mực Đêm 3 nhanh hơn (4.5 m/s) — tận dụng 2 Bùa Gió và vòng an toàn quanh đèn!',
+      'Bóng Mực Đêm 3 nhanh hơn (4.5 m/s) và sẽ lao tới hút dầu bất kỳ đèn nào tụt dưới 30 — nhớ tuần tra châm dầu đều đặn!',
     ],
   };
 
@@ -325,23 +349,23 @@ function showResultDialog(): void {
   }
 
   if (won && currentNight === 3) {
-    resultEyebrow.textContent = 'Bình Minh Đã Lên!';
-    resultTitle.textContent = 'Chúc mừng hoàn thành Ba Hòn Đảo!';
+    resultEyebrow.textContent = 'Bình Minh Đã Lên! (dawn_survived)';
+    resultTitle.textContent = 'Chúc mừng giữ sáng Ba Hòn Đảo!';
     resultSummary.textContent =
-      'Toàn bộ Đảo Bến, Đảo Cau và Đảo Chuông đã rực sáng. Sương đen tan biến trước ánh bình minh ấm áp!';
+      'Mây đã giữ vững ánh đèn trên Đảo Bến, Đảo Cau và Đảo Chuông cho tới bình minh. Sương đen tan biến hoàn toàn!';
     btnResultPrimary.textContent = 'Chơi lại từ Đêm 1';
   } else if (won) {
-    resultEyebrow.textContent = `Hoàn thành Đêm ${currentNight}`;
-    resultTitle.textContent = `${sim.map.name} đã bừng sáng!`;
-    resultSummary.textContent = 'Mây đã thắp sáng toàn bộ Đèn Lồng Lớn. Sẵn sàng cho hòn đảo tiếp theo!';
+    resultEyebrow.textContent = `Vượt qua Đêm ${currentNight} · Bình minh`;
+    resultTitle.textContent = `${sim.map.name} đã trụ vững tới bình minh!`;
+    resultSummary.textContent = `Giữ được ${litCount}/${sim.lanterns.length} đèn sáng (ngưỡng ${sim.getWinLitThreshold()}). Sẵn sàng cho hòn đảo tiếp theo!`;
     btnResultPrimary.textContent = `Sang Đêm ${currentNight + 1}`;
   } else {
     resultEyebrow.textContent = `Thất bại · Đêm ${currentNight}`;
     resultTitle.textContent =
-      sim.gameOverReason === 'dawn' ? 'Bình minh đã tới...' : 'Ngọn lửa đã tắt...';
+      sim.gameOverReason === 'dawn' ? 'Không đủ đèn sáng lúc bình minh...' : 'Ngọn lửa đã tắt...';
     resultSummary.textContent =
       sim.gameOverReason === 'dawn'
-        ? 'Hết thời gian trước khi thắp đủ đèn. Thử lại Đêm này nhé!'
+        ? `Lúc bình minh chỉ còn ${litCount}/${sim.lanterns.length} đèn sáng (cần tối thiểu ${sim.getWinLitThreshold()}). Thử lại Đêm này nhé!`
         : 'Mây đã mất hết Ngọn Lửa. Giữ bình tĩnh và thử lại Đêm này!';
     btnResultPrimary.textContent = `Chơi lại Đêm ${currentNight}`;
   }
@@ -389,7 +413,9 @@ function updateHud(): void {
 
   const timeLeft = sim.getTimeLeftS();
   hudTime.textContent = formatTime(timeLeft);
-  hudClockBox.classList.toggle('danger', timeLeft <= 30 && sim.state === 'playing');
+  const isClockDanger = timeLeft <= 30 && sim.state === 'playing';
+  hudClockBox.classList.toggle('danger', isClockDanger);
+  hudClockWarn.hidden = !isClockDanger;
 
   // Final 10-second countdown audio cue
   const secCeil = Math.ceil(timeLeft);
@@ -398,10 +424,10 @@ function updateHud(): void {
     sound.playCountdownTick();
   }
 
-  hudLanterns.textContent = `${litCount} / ${sim.lanterns.length}`;
+  hudLanterns.textContent = `${litCount} / ${sim.lanterns.length} (cần ${sim.getWinLitThreshold()})`;
   hudScore.textContent = String(sim.score);
 
-  // Charm & Wind status badges
+  // Charm, Wind & Low-Fuel/Drain warning badges
   if (sim.player.charmTicks > 0) {
     hudCharmBadge.hidden = false;
     hudCharmTime.textContent = `${(sim.player.charmTicks / TICK_RATE).toFixed(1)}s`;
@@ -411,10 +437,10 @@ function updateHud(): void {
 
   if (sim.wind.active) {
     hudWindBadge.hidden = false;
-    hudWindBadge.textContent = `Gió mạnh! (${Math.round(sim.wind.dirDeg)}°)`;
+    hudWindBadge.textContent = `⚠ Gió mạnh! (${Math.round(sim.wind.dirDeg)}°)`;
   } else if (sim.wind.warning) {
     hudWindBadge.hidden = false;
-    hudWindBadge.textContent = 'Cảnh báo: Gió mạnh sắp tới!';
+    hudWindBadge.textContent = '⚠ Cảnh báo: Gió mạnh sắp tới!';
     if (!windWarningSounded) {
       windWarningSounded = true;
       sound.playWindWarning();
@@ -424,9 +450,24 @@ function updateHud(): void {
     windWarningSounded = false;
   }
 
-  // 10-slot mote bar
-  hudCarriedText.textContent = `${sim.player.carried} / ${TUNING.carry_capacity}`;
-  for (let i = 0; i < moteSlotEls.length; i++) {
+  const drainingShade = sim.shades.find((s) => s.state === 'drain' && s.targetLanternId);
+  const lowFuelLanterns = sim.lanterns.filter((l) => l.lit && l.fuelUnits < LOW_FUEL_UNITS);
+  if (drainingShade) {
+    hudLowFuelBadge.hidden = false;
+    hudLowFuelBadge.textContent = `⚠ Bóng Mực đang hút dầu ${drainingShade.targetLanternId}!`;
+  } else if (lowFuelLanterns.length > 0) {
+    const worst = lowFuelLanterns.reduce((a, b) => (a.fuelUnits <= b.fuelUnits ? a : b));
+    hudLowFuelBadge.hidden = false;
+    hudLowFuelBadge.textContent = `⚠ ${worst.id} sắp cạn dầu (${Math.floor(worst.fuelUnits / 60)}%)`;
+  } else {
+    hudLowFuelBadge.hidden = true;
+  }
+
+  // Dynamic capacity mote bar (10..20 slots)
+  const carryCap = sim.getCarryCapacity();
+  ensureMoteSlots(carryCap);
+  hudCarriedText.textContent = `${sim.player.carried} / ${carryCap}`;
+  for (let i = 0; i < carryCap; i++) {
     moteSlotEls[i].classList.toggle('filled', i < sim.player.carried);
   }
 
@@ -457,16 +498,23 @@ function updateHud(): void {
     hudPulseText.textContent = 'Sẵn sàng (3 đom đóm)';
   }
 
-  // Standardized lantern interact prompt: "E — Nạp ánh sáng (x/10)"
-  const nearbyUnlit = sim.lanterns.find(
+  // Contextual lantern interact prompt: unlit (10 or relight 5) OR lit with fuel < 100
+  const nearbyReceivable = sim.lanterns.find(
     (l) =>
-      !l.lit &&
+      (!l.lit || l.fuelUnits < FUEL_MAX_UNITS) &&
       distXZ(sim.player.pos, l.pos) <= TUNING.interact_radius &&
       Math.abs(sim.player.pos[1] - l.pos[1]) <= INTERACT_HEIGHT_TOLERANCE,
   );
-  if (nearbyUnlit && uiState === 'playing' && sim.player.fallRespawnTicks === 0) {
+  if (nearbyReceivable && uiState === 'playing' && sim.player.fallRespawnTicks === 0) {
     hudPrompt.hidden = false;
-    hudPrompt.textContent = `E — Nạp ánh sáng (${nearbyUnlit.deposited}/${TUNING.lantern_cost})`;
+    if (!nearbyReceivable.lit) {
+      const cost = nearbyReceivable.everLit ? TUNING.relight_cost : TUNING.lantern_cost;
+      const action = nearbyReceivable.everLit ? 'Thắp lại' : 'Nạp ánh sáng';
+      hudPrompt.textContent = `E — ${action} ${nearbyReceivable.id} (${nearbyReceivable.deposited}/${cost})`;
+    } else {
+      const fuelPct = Math.floor(nearbyReceivable.fuelUnits / 60);
+      hudPrompt.textContent = `E — Châm dầu ${nearbyReceivable.id} (còn ${fuelPct}%)`;
+    }
   } else {
     hudPrompt.hidden = true;
   }
@@ -630,6 +678,12 @@ sensSlider.addEventListener('input', () => {
   saveSettings(settings);
 });
 
+colorblindCheckbox.addEventListener('change', () => {
+  settings.colorblind = colorblindCheckbox.checked;
+  applyColorblindMode(settings.colorblind);
+  saveSettings(settings);
+});
+
 settingsDialog.addEventListener('close', () => {
   settingsDialog.returnValue = '';
   if (settingsReturnTo === 'menu') {
@@ -715,6 +769,7 @@ function loop(nowMs: number): void {
           sound.playDash();
         } else if (ev.name === 'mote_picked') {
           sound.playPickup(ev.data.carried);
+          renderer.triggerPickupSparkle(sim.player.pos);
         } else if (ev.name === 'charm_picked') {
           sound.playCharm();
           showToast('Bùa Gió kích hoạt! Tốc độ 7.2 m/s & Lướt không hồi chiêu (10s)!');
@@ -723,7 +778,19 @@ function loop(nowMs: number): void {
         } else if (ev.name === 'lantern_lit') {
           const litCount = sim.lanterns.filter((l) => l.lit).length;
           sound.playLanternLit(litCount);
-          showToast(`Đã thắp sáng ${ev.data.lantern_id}! (${litCount}/${sim.lanterns.length})`);
+          const tag = ev.data.relight ? 'Thắp lại' : 'Thắp sáng';
+          showToast(
+            `${tag} ${ev.data.lantern_id}! (${litCount}/${sim.lanterns.length}) · Sức chứa: ${sim.getCarryCapacity()}`,
+          );
+        } else if (ev.name === 'refuel') {
+          sound.playRefuel();
+          showToast(`Đã châm +${ev.data.amount} đom đóm vào ${ev.data.lantern_id} (dầu ${ev.data.fuel}%)`);
+        } else if (ev.name === 'lantern_out') {
+          sound.playLanternOut();
+          showToast(`⚠ ${ev.data.lantern_id} đã cạn dầu và tắt! (Thắp lại chỉ cần 5 đom đóm)`);
+        } else if (ev.name === 'fuel_drain') {
+          sound.playDrainAlert();
+          showToast(`⚠ Bóng Mực ${ev.data.shade_id} đang hút dầu ${ev.data.lantern_id} (${ev.data.fuel}%)!`);
         } else if (ev.name === 'pulse') {
           sound.playPulse();
           renderer.triggerPulseEffect(sim.player.pos);
