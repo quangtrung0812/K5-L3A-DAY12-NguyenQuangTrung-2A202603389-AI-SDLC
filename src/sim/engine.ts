@@ -1,6 +1,7 @@
 import { getNightMap, type NightMapDef } from './maps.js';
 import { SeededRng } from './prng.js';
 import {
+  CAPACITY_STEP_PER_LIGHT,
   CHARM_DURATION_TICKS,
   CHARM_PLAYER_SPEED,
   CHARM_RESPAWN_TICKS,
@@ -20,11 +21,17 @@ import {
   DT,
   FALL_RESPAWN_TICKS,
   FALL_Y_THRESHOLD,
+  FUEL_DECAY_UNITS_PER_TICK,
+  FUEL_DRAIN_UNITS_PER_TICK,
+  FUEL_MAX_UNITS,
+  FUEL_PER_MOTE_UNITS,
+  FUEL_UNITS_PER_POINT,
   GRAVITY,
   INITIAL_MOTE_COUNT,
   INTERACT_HEIGHT_TOLERANCE,
   INVULN_TICKS,
   JUMP_VELOCITY,
+  LOW_FUEL_UNITS,
   MAX_MOTE_COUNT,
   MOTE_SPAWN_INTERVAL_TICKS,
   PICKUP_HEIGHT_TOLERANCE,
@@ -34,6 +41,9 @@ import {
   PULSE_STUN_TICKS,
   SAFE_PUSH_MAX_TICKS,
   SHADE_DETECT_RADIUS,
+  SHADE_DRAIN_CHASE_RADIUS,
+  SHADE_DRAIN_EVENT_INTERVAL_TICKS,
+  SHADE_DRAIN_RADIUS,
   SHADE_HIT_HEIGHT_TOLERANCE,
   SHADE_LEASH_RADIUS,
   SHADE_MIN_SPAWN_PLAYER_DIST,
@@ -67,6 +77,11 @@ import type {
   Vec3,
   WindState,
 } from './types.js';
+
+export function round1(value: number): number {
+  const rounded = Math.round(value * 10) / 10;
+  return Object.is(rounded, -0) ? 0 : rounded;
+}
 
 export function round3(value: number): number {
   const rounded = Math.round(value * 1000) / 1000;
@@ -164,12 +179,15 @@ export class LanternIslandSim {
     this.randomDrifters = scenario?.random_drifters ?? this.map.hasDrifters;
     this.windEnabled = scenario?.wind_enabled ?? this.map.hasWind;
 
-    // 1. Initialize standardized lanterns for this night
+    // 1. Initialize standardized lanterns for this night (Contract v1.2 fuel in 1/60 integer units)
     this.lanterns = this.map.lanterns.map((l) => ({
       id: l.id,
       pos: [l.pos[0], l.pos[1], l.pos[2]],
       lit: false,
       deposited: 0,
+      fuelUnits: 0,
+      everLit: false,
+      relitCount: 0,
     }));
 
     if (scenario?.lanterns) {
@@ -179,16 +197,38 @@ export class LanternIslandSim {
         if (override.pos !== undefined) {
           target.pos = [override.pos[0], override.pos[1], override.pos[2]];
         }
+        if (override.ever_lit !== undefined) {
+          target.everLit = override.ever_lit;
+        }
         if (override.deposited !== undefined) {
           target.deposited = override.deposited;
         }
         if (override.lit !== undefined) {
           target.lit = override.lit;
-          if (override.lit && override.deposited === undefined) {
-            target.deposited = Math.max(target.deposited, TUNING.lantern_cost);
+          if (target.lit) {
+            if (override.ever_lit === undefined) target.everLit = true;
+            const initFuel = override.fuel ?? TUNING.fuel_max;
+            target.fuelUnits = Math.max(
+              0,
+              Math.min(FUEL_MAX_UNITS, Math.round(initFuel * FUEL_UNITS_PER_POINT)),
+            );
+            if (override.deposited === undefined) {
+              target.deposited = Math.max(target.deposited, TUNING.lantern_cost);
+            }
+          } else {
+            target.fuelUnits = 0;
           }
-        } else if (target.deposited >= TUNING.lantern_cost) {
-          target.lit = true;
+        } else {
+          const requiredCost = target.everLit ? TUNING.relight_cost : TUNING.lantern_cost;
+          if (target.deposited >= requiredCost) {
+            target.lit = true;
+            if (override.ever_lit === undefined) target.everLit = true;
+            const initFuel = override.fuel ?? TUNING.fuel_max;
+            target.fuelUnits = Math.max(
+              0,
+              Math.min(FUEL_MAX_UNITS, Math.round(initFuel * FUEL_UNITS_PER_POINT)),
+            );
+          }
         }
       }
     }
@@ -207,6 +247,7 @@ export class LanternIslandSim {
       yawRad: 0, // facing +Z
       flames: scenario?.player?.flames ?? TUNING.flames,
       carried: scenario?.player?.carried ?? 0,
+      successfulLights: scenario?.player?.successful_lights ?? 0,
       invulnTicks: scenario?.player?.invuln_ticks ?? 0,
       dashActiveTicks: 0,
       dashDir: [0, 1],
@@ -274,6 +315,12 @@ export class LanternIslandSim {
               : initialState === 'spawning'
                 ? SHADE_SPAWNING_STATE_TICKS
                 : 0;
+        let targetLanternId = s.target_lantern_id ?? null;
+        if (initialState === 'drain' && !targetLanternId) {
+          const nearestWeak = this.findNearestLantern(pos, (l) => l.lit && l.fuelUnits < LOW_FUEL_UNITS);
+          const nearestLit = nearestWeak ?? this.findNearestLantern(pos, (l) => l.lit);
+          targetLanternId = nearestLit ? nearestLit.id : null;
+        }
         this.shades.push({
           id: s.id ?? this.allocShadeId(),
           pos,
@@ -284,6 +331,8 @@ export class LanternIslandSim {
           recoilDir: [1, 0],
           safePushTicks: 0,
           wanderTarget: null,
+          targetLanternId,
+          drainTicks: 0,
         });
       }
     }
@@ -348,6 +397,25 @@ export class LanternIslandSim {
     }
   }
 
+  getCarryCapacity(): number {
+    return Math.min(
+      TUNING.capacity_max,
+      TUNING.carry_capacity + CAPACITY_STEP_PER_LIGHT * this.player.successfulLights,
+    );
+  }
+
+  getWinLitThreshold(): number {
+    return Math.ceil(TUNING.win_ratio * this.lanterns.length - 1e-9);
+  }
+
+  getLanternFuel(lantern: LanternEntity): number {
+    return lantern.lit ? round1(lantern.fuelUnits / FUEL_UNITS_PER_POINT) : 0;
+  }
+
+  isLanternSafeActive(lantern: LanternEntity): boolean {
+    return lantern.lit && lantern.fuelUnits >= LOW_FUEL_UNITS;
+  }
+
   getTimeLeftS(): number {
     return Math.max(0, round3(this.initialTimeLeftS - this.simTick / TICK_RATE));
   }
@@ -371,6 +439,7 @@ export class LanternIslandSim {
         grounded: this.player.grounded,
         flames: this.player.flames,
         carried: this.player.carried,
+        capacity: this.getCarryCapacity(),
         invuln: this.player.invulnTicks > 0,
         dash_cd_s: round3(this.player.dashCdTicks / TICK_RATE),
         pulse_cd_s: round3(this.player.pulseCdTicks / TICK_RATE),
@@ -381,6 +450,9 @@ export class LanternIslandSim {
         pos: roundVec3(l.pos),
         lit: l.lit,
         deposited: l.deposited,
+        fuel: this.getLanternFuel(l),
+        ever_lit: l.everLit,
+        relit_count: l.relitCount,
       })),
       shades: this.shades.map((s) => ({
         id: s.id,
@@ -465,13 +537,13 @@ export class LanternIslandSim {
     const dashPressed = input.dash && !this.prevInput.dash;
     this.syncPrevInput(input);
 
-    // Guard terminal scenario setup on tick 1
-    if (this.simTick === 1 && (this.player.flames <= 0 || this.lanterns.every((l) => l.lit) || this.initialTimeLeftS <= 0)) {
+    // Guard pre-terminal scenario setup on tick 1 (no early all_lit win in Contract v1.2)
+    if (this.simTick === 1 && (this.player.flames <= 0 || this.initialTimeLeftS <= 0)) {
       this.evaluateWinLoss(events);
       return events;
     }
 
-    // ── STEP 2: Decrement counters (time via simTick, cooldowns, invuln, stun, charm, TTL, charm respawn, drifter flee, wind) ──
+    // ── STEP 2: Decrement counters, deduct lantern fuel (passive decay + shade drain), extinguish <= 0 ──
     const charmActiveThisTick = this.player.charmTicks > 0;
     if (this.player.invulnTicks > 0) this.player.invulnTicks -= 1;
     if (this.player.dashCdTicks > 0) this.player.dashCdTicks -= 1;
@@ -491,7 +563,7 @@ export class LanternIslandSim {
       }
     }
 
-    // Shade timers (spawning & stunned exit in Step 2; recoil completes its 60th retreat step in Step 8)
+    // Shade timers (spawning exits to chase/wander; stunned ALWAYS exits to wander per Contract v1.2)
     for (const shade of this.shades) {
       if (shade.state === 'spawning' || shade.state === 'stunned') {
         if (shade.stateTicksLeft > 0) shade.stateTicksLeft -= 1;
@@ -499,12 +571,18 @@ export class LanternIslandSim {
           const prevState = shade.state;
           shade.stateTicksLeft = 0;
           shade.knockbackTicks = 0;
-          const d = distXZ(shade.pos, this.player.pos);
-          const canChase =
-            this.player.fallRespawnTicks === 0 &&
-            this.player.flames > 0 &&
-            d <= (prevState === 'spawning' ? SHADE_DETECT_RADIUS : SHADE_LEASH_RADIUS);
-          shade.state = canChase ? 'chase' : 'wander';
+          shade.targetLanternId = null;
+          shade.drainTicks = 0;
+          if (prevState === 'stunned') {
+            shade.state = 'wander';
+          } else {
+            const d = distXZ(shade.pos, this.player.pos);
+            const canChase =
+              this.player.fallRespawnTicks === 0 &&
+              this.player.flames > 0 &&
+              d <= SHADE_DETECT_RADIUS;
+            shade.state = canChase ? 'chase' : 'wander';
+          }
         }
       }
       if (shade.safePushTicks > 0) {
@@ -565,6 +643,72 @@ export class LanternIslandSim {
     } else {
       this.wind.active = false;
       this.wind.warning = false;
+    }
+
+    // Step 2 (Contract v1.2): Fuel decay (1/60 per tick) + Shade drain (5/60 per tick per draining shade)
+    const drainCandidates: { shade: ShadeEntity; lantern: LanternEntity }[] = [];
+    const sortedShadesForDrain = [...this.shades].sort((a, b) => compareEntityId(a.id, b.id));
+    for (const shade of sortedShadesForDrain) {
+      if (shade.state !== 'drain' || !shade.targetLanternId || shade.safePushTicks > 0) continue;
+      const target = this.lanterns.find((l) => l.id === shade.targetLanternId);
+      if (
+        target &&
+        target.lit &&
+        target.fuelUnits < LOW_FUEL_UNITS &&
+        distXZ(shade.pos, target.pos) <= SHADE_DRAIN_RADIUS
+      ) {
+        drainCandidates.push({ shade, lantern: target });
+      }
+    }
+
+    for (const lantern of this.lanterns) {
+      if (lantern.lit) {
+        lantern.fuelUnits = Math.max(0, lantern.fuelUnits - FUEL_DECAY_UNITS_PER_TICK);
+      }
+    }
+
+    const drainEventsToEmit: { shade: ShadeEntity; lantern: LanternEntity }[] = [];
+    for (const entry of drainCandidates) {
+      entry.lantern.fuelUnits = Math.max(0, entry.lantern.fuelUnits - FUEL_DRAIN_UNITS_PER_TICK);
+      entry.shade.drainTicks += 1;
+      if (entry.shade.drainTicks % SHADE_DRAIN_EVENT_INTERVAL_TICKS === 0) {
+        drainEventsToEmit.push(entry);
+      }
+    }
+    for (const entry of drainEventsToEmit) {
+      events.push({
+        type: 'event',
+        tick: this.tick,
+        name: 'fuel_drain',
+        data: {
+          lantern_id: entry.lantern.id,
+          shade_id: entry.shade.id,
+          fuel: round1(entry.lantern.fuelUnits / FUEL_UNITS_PER_POINT),
+        },
+      });
+    }
+
+    // Immediately after Step 2: extinguish any lit lantern with fuel <= 0
+    for (const lantern of this.lanterns) {
+      if (lantern.lit && lantern.fuelUnits <= 0) {
+        lantern.lit = false;
+        lantern.fuelUnits = 0;
+        lantern.deposited = 0;
+        lantern.everLit = true;
+        events.push({
+          type: 'event',
+          tick: this.tick,
+          name: 'lantern_out',
+          data: { lantern_id: lantern.id },
+        });
+        for (const shade of this.shades) {
+          if (shade.state === 'drain' && shade.targetLanternId === lantern.id) {
+            shade.state = 'wander';
+            shade.targetLanternId = null;
+            shade.drainTicks = 0;
+          }
+        }
+      }
     }
 
     // ── STEP 3: Move Mây (jump, dash, launchpad, wind) & check fall (Y < -10) ──
@@ -646,7 +790,6 @@ export class LanternIslandSim {
       // Vertical integration
       const surfaceY = this.map.getSurfaceY(this.player.pos[0], this.player.pos[2]);
       if (this.player.dashActiveTicks > 0) {
-        // Keep exact altitude during dash, unless ascending a ramp beneath feet
         if (surfaceY !== null && this.player.pos[1] < surfaceY) {
           this.player.pos[1] = surfaceY;
           this.player.grounded = true;
@@ -667,7 +810,6 @@ export class LanternIslandSim {
           this.player.grounded = true;
           this.player.launchActive = false;
         } else if (surfaceY !== null && this.player.grounded && Math.abs(this.player.pos[1] - surfaceY) <= 0.48) {
-          // Smoothly follow ramp slope while walking up or down
           this.player.pos[1] = surfaceY;
           vy = 0;
           this.player.grounded = true;
@@ -715,14 +857,15 @@ export class LanternIslandSim {
       }
     }
 
-    // ── STEP 4: Pick up motes and charms ──
+    // ── STEP 4: Pick up motes (respecting dynamic capacity) and charms ──
     const canInteractWorld = this.player.fallRespawnTicks === 0 && this.player.flames > 0;
     if (canInteractWorld) {
-      if (this.player.carried < TUNING.carry_capacity && this.motes.length > 0) {
+      const carryCap = this.getCarryCapacity();
+      if (this.player.carried < carryCap && this.motes.length > 0) {
         const remaining: MoteEntity[] = [];
         for (const mote of this.motes) {
           if (
-            this.player.carried < TUNING.carry_capacity &&
+            this.player.carried < carryCap &&
             this.simTick >= mote.pickableFromTick &&
             distXZ(this.player.pos, mote.pos) <= TUNING.pickup_radius &&
             Math.abs(this.player.pos[1] - mote.pos[1]) <= PICKUP_HEIGHT_TOLERANCE
@@ -761,12 +904,13 @@ export class LanternIslandSim {
       }
     }
 
-    // ── STEP 5: Interact with lanterns ──
+    // ── STEP 5: Interact with lanterns (light, relight, or refuel; skip full-fuel lit lanterns) ──
     if (canInteractWorld && interactPressed && this.player.carried > 0) {
       let bestLantern: LanternEntity | null = null;
       let bestDist = Infinity;
       for (const lantern of this.lanterns) {
-        if (lantern.lit) continue;
+        // Only consider receivable lanterns: unlit OR lit with fuel < 100
+        if (lantern.lit && lantern.fuelUnits >= FUEL_MAX_UNITS) continue;
         if (Math.abs(this.player.pos[1] - lantern.pos[1]) > INTERACT_HEIGHT_TOLERANCE) continue;
         const d = distXZ(this.player.pos, lantern.pos);
         if (d <= TUNING.interact_radius) {
@@ -781,50 +925,84 @@ export class LanternIslandSim {
       }
 
       if (bestLantern) {
-        const need = Math.max(0, TUNING.lantern_cost - bestLantern.deposited);
-        const amount = Math.min(this.player.carried, need);
-        if (amount > 0) {
-          this.player.carried -= amount;
-          bestLantern.deposited += amount;
-          this.score += amount * TUNING.score.per_mote;
-          events.push({
-            type: 'event',
-            tick: this.tick,
-            name: 'deposit',
-            data: {
-              lantern_id: bestLantern.id,
-              amount,
-              deposited: bestLantern.deposited,
-            },
-          });
-
-          if (bestLantern.deposited >= TUNING.lantern_cost) {
-            bestLantern.lit = true;
-            this.score += TUNING.score.per_lantern;
+        if (!bestLantern.lit) {
+          const cost = bestLantern.everLit ? TUNING.relight_cost : TUNING.lantern_cost;
+          const need = Math.max(0, cost - bestLantern.deposited);
+          const amount = Math.min(this.player.carried, need);
+          if (amount > 0) {
+            this.player.carried -= amount;
+            bestLantern.deposited += amount;
+            this.score += amount * TUNING.score.per_mote;
             events.push({
               type: 'event',
               tick: this.tick,
-              name: 'lantern_lit',
-              data: { lantern_id: bestLantern.id },
+              name: 'deposit',
+              data: {
+                lantern_id: bestLantern.id,
+                amount,
+                deposited: bestLantern.deposited,
+              },
             });
 
-            // Mark shades currently inside this newly lit lantern's 6m safe zone for <=30-tick pushout
-            for (const shade of this.shades) {
-              if (distXZ(shade.pos, bestLantern.pos) < TUNING.safe_radius) {
-                shade.safePushTicks = SAFE_PUSH_MAX_TICKS;
+            if (bestLantern.deposited >= cost) {
+              const isRelight = bestLantern.everLit;
+              bestLantern.lit = true;
+              bestLantern.fuelUnits = FUEL_MAX_UNITS;
+              bestLantern.everLit = true;
+              if (isRelight) {
+                bestLantern.relitCount += 1;
               }
+              this.player.successfulLights += 1;
+              this.score += isRelight ? TUNING.score.per_relight : TUNING.score.per_lantern;
+              events.push({
+                type: 'event',
+                tick: this.tick,
+                name: 'lantern_lit',
+                data: { lantern_id: bestLantern.id, relight: isRelight },
+              });
+
+              this.triggerSafeZonePushout(bestLantern);
+            }
+          }
+        } else {
+          // Refuel lit lantern with fuel < 100
+          const wasBelowSafe = bestLantern.fuelUnits < LOW_FUEL_UNITS;
+          const missingUnits = FUEL_MAX_UNITS - bestLantern.fuelUnits;
+          const needMotes = Math.ceil(missingUnits / FUEL_PER_MOTE_UNITS);
+          const used = Math.min(this.player.carried, needMotes);
+          if (used > 0) {
+            this.player.carried -= used;
+            bestLantern.fuelUnits = Math.min(
+              FUEL_MAX_UNITS,
+              bestLantern.fuelUnits + used * FUEL_PER_MOTE_UNITS,
+            );
+            this.score += used * TUNING.score.per_mote;
+            events.push({
+              type: 'event',
+              tick: this.tick,
+              name: 'refuel',
+              data: {
+                lantern_id: bestLantern.id,
+                amount: used,
+                fuel: round1(bestLantern.fuelUnits / FUEL_UNITS_PER_POINT),
+              },
+            });
+
+            // Restoring fuel to >= 30 re-activates safe zone and pushes out inside shades in <= 30 ticks (0 dmg)
+            if (wasBelowSafe && bestLantern.fuelUnits >= LOW_FUEL_UNITS) {
+              this.triggerSafeZonePushout(bestLantern);
             }
           }
         }
       }
     }
 
-    // ── STEP 6: Update safe zones ──
+    // ── STEP 6: Update safe zones (only lit lanterns with fuel >= 30) ──
     for (const shade of this.shades) {
       if (shade.safePushTicks > 0) {
         let insideAny = false;
         for (const lantern of this.lanterns) {
-          if (!lantern.lit) continue;
+          if (!this.isLanternSafeActive(lantern)) continue;
           const dx = shade.pos[0] - lantern.pos[0];
           const dz = shade.pos[2] - lantern.pos[2];
           const d = Math.hypot(dx, dz);
@@ -834,7 +1012,10 @@ export class LanternIslandSim {
             const ux = d > 1e-6 ? dx / d : 1;
             const uz = d > 1e-6 ? dz / d : 0;
             const remaining = targetEdge - d;
-            const stepLen = Math.min(remaining, Math.max(remaining / shade.safePushTicks, targetEdge / SAFE_PUSH_MAX_TICKS));
+            const stepLen = Math.min(
+              remaining,
+              Math.max(remaining / shade.safePushTicks, targetEdge / SAFE_PUSH_MAX_TICKS),
+            );
             const nextX = shade.pos[0] + ux * stepLen;
             const nextZ = shade.pos[2] + uz * stepLen;
             const pushed = this.map.resolveMove(shade.pos, nextX, nextZ, false);
@@ -852,7 +1033,7 @@ export class LanternIslandSim {
       }
     }
 
-    // ── STEP 7: Pulse (Tỏa Sáng) ──
+    // ── STEP 7: Pulse (Tỏa Sáng) — +5 normal, total +15 if shade was draining ──
     if (
       canInteractWorld &&
       pulsePressed &&
@@ -873,6 +1054,7 @@ export class LanternIslandSim {
       for (const shade of sortedShades) {
         if (shade.state === 'spawning') continue;
         if (dist3D(pulseCenter, shade.pos) <= TUNING.pulse_radius) {
+          const wasDraining = shade.state === 'drain';
           const dx = shade.pos[0] - this.player.pos[0];
           const dz = shade.pos[2] - this.player.pos[2];
           const dXZ = Math.hypot(dx, dz);
@@ -883,8 +1065,10 @@ export class LanternIslandSim {
           shade.stateTicksLeft = PULSE_STUN_TICKS;
           shade.knockbackTicks = PULSE_KNOCKBACK_TICKS;
           shade.knockbackDir = [ux, uz];
+          shade.targetLanternId = null;
+          shade.drainTicks = 0;
           stunnedIds.push(shade.id);
-          this.score += TUNING.score.per_stun;
+          this.score += wasDraining ? TUNING.score.per_stun_drain : TUNING.score.per_stun;
         }
       }
 
@@ -928,7 +1112,7 @@ export class LanternIslandSim {
       }
     }
 
-    // ── STEP 8: Move Shades and Drifters ──
+    // ── STEP 8: Move Shades (including drain AI) and Drifters ──
     for (const shade of this.shades) {
       if (shade.safePushTicks > 0) continue;
 
@@ -949,7 +1133,10 @@ export class LanternIslandSim {
           }
           this.blockShadeOutsideSafeZones(shade);
         }
-      } else if (shade.state === 'recoil') {
+        continue;
+      }
+
+      if (shade.state === 'recoil') {
         const stepDist = SHADE_RECOIL_DISTANCE / SHADE_RECOIL_TICKS;
         const nextX = shade.pos[0] + shade.recoilDir[0] * stepDist;
         const nextZ = shade.pos[2] + shade.recoilDir[1] * stepDist;
@@ -967,23 +1154,98 @@ export class LanternIslandSim {
           shade.state = canInteractWorld && d <= SHADE_LEASH_RADIUS ? 'chase' : 'wander';
         }
         continue;
-      } else if (shade.state === 'wander') {
+      }
+
+      if (shade.state === 'drain') {
+        const target = shade.targetLanternId
+          ? this.lanterns.find((l) => l.id === shade.targetLanternId)
+          : undefined;
+        if (canInteractWorld && distXZ(shade.pos, this.player.pos) <= SHADE_DRAIN_CHASE_RADIUS) {
+          shade.state = 'chase';
+          shade.targetLanternId = null;
+          shade.drainTicks = 0;
+        } else if (
+          !target ||
+          !target.lit ||
+          target.fuelUnits >= LOW_FUEL_UNITS ||
+          distXZ(shade.pos, target.pos) > SHADE_DRAIN_RADIUS
+        ) {
+          shade.state = 'wander';
+          shade.targetLanternId = null;
+          shade.drainTicks = 0;
+        } else {
+          // Stand still while draining lantern fuel
+          continue;
+        }
+      }
+
+      if (shade.state === 'wander') {
         if (canInteractWorld && distXZ(shade.pos, this.player.pos) <= SHADE_DETECT_RADIUS) {
           shade.state = 'chase';
           shade.wanderTarget = null;
+          shade.targetLanternId = null;
+          shade.drainTicks = 0;
         } else {
-          if (
-            !shade.wanderTarget ||
-            Math.hypot(shade.wanderTarget[0] - shade.pos[0], shade.wanderTarget[1] - shade.pos[2]) < 1.0
-          ) {
-            const pts = this.map.shadeSpawnPoints;
-            const pick = pts[Math.floor(this.rng.next() * pts.length)];
-            shade.wanderTarget = [pick[0], pick[2]];
+          // Priority 1: nearest weak lit lantern (fuel < 30, tiebreak smallest id)
+          const weakLantern = this.findNearestLantern(
+            shade.pos,
+            (l) => l.lit && l.fuelUnits < LOW_FUEL_UNITS,
+          );
+          if (weakLantern) {
+            shade.targetLanternId = weakLantern.id;
+            shade.wanderTarget = null;
+            const dWeak = distXZ(shade.pos, weakLantern.pos);
+            if (dWeak <= SHADE_DRAIN_RADIUS) {
+              shade.state = 'drain';
+              shade.drainTicks = 0;
+              continue;
+            }
+            const dx = weakLantern.pos[0] - shade.pos[0];
+            const dz = weakLantern.pos[2] - shade.pos[2];
+            const stepDist = Math.min(dWeak, SHADE_WANDER_SPEED * DT);
+            const moved = this.map.resolveMove(
+              shade.pos,
+              shade.pos[0] + (dx / dWeak) * stepDist,
+              shade.pos[2] + (dz / dWeak) * stepDist,
+              false,
+            );
+            shade.pos[0] = moved.x;
+            shade.pos[2] = moved.z;
+            const sy = this.map.getSurfaceY(shade.pos[0], shade.pos[2]);
+            if (sy !== null) shade.pos[1] = sy;
+            this.blockShadeOutsideSafeZones(shade);
+            if (distXZ(shade.pos, weakLantern.pos) <= SHADE_DRAIN_RADIUS) {
+              shade.state = 'drain';
+              shade.drainTicks = 0;
+            }
+            continue;
           }
-          const dx = shade.wanderTarget[0] - shade.pos[0];
-          const dz = shade.wanderTarget[1] - shade.pos[2];
+
+          // Priority 2: nearest unlit lantern (fallback random patrol if all lanterns are safely lit)
+          shade.targetLanternId = null;
+          const unlitLantern = this.findNearestLantern(shade.pos, (l) => !l.lit);
+          let tx: number;
+          let tz: number;
+          if (unlitLantern) {
+            tx = unlitLantern.pos[0];
+            tz = unlitLantern.pos[2];
+          } else {
+            if (
+              !shade.wanderTarget ||
+              Math.hypot(shade.wanderTarget[0] - shade.pos[0], shade.wanderTarget[1] - shade.pos[2]) < 1.0
+            ) {
+              const pts = this.map.shadeSpawnPoints;
+              const pick = pts[Math.floor(this.rng.next() * pts.length)];
+              shade.wanderTarget = [pick[0], pick[2]];
+            }
+            tx = shade.wanderTarget[0];
+            tz = shade.wanderTarget[1];
+          }
+
+          const dx = tx - shade.pos[0];
+          const dz = tz - shade.pos[2];
           const d = Math.hypot(dx, dz);
-          if (d > 1e-6) {
+          if (d > 0.25) {
             const stepDist = Math.min(d, SHADE_WANDER_SPEED * DT);
             const moved = this.map.resolveMove(
               shade.pos,
@@ -998,6 +1260,7 @@ export class LanternIslandSim {
             if (moved.blocked) shade.wanderTarget = null;
             this.blockShadeOutsideSafeZones(shade);
           }
+          continue;
         }
       }
 
@@ -1115,7 +1378,6 @@ export class LanternIslandSim {
           this.player.carried -= dropped;
           this.player.invulnTicks = INVULN_TICKS;
 
-          // Spawn dropped motes on 1.5–2.5m ring around Mây (pickable from next tick)
           for (let i = 0; i < dropped; i++) {
             const dropPos = this.findDropPosition(this.player.pos);
             this.motes.push({
@@ -1127,13 +1389,14 @@ export class LanternIslandSim {
             });
           }
 
-          // Hitting shade recoils 2m over 60 ticks
           const rdx = hitter.pos[0] - this.player.pos[0];
           const rdz = hitter.pos[2] - this.player.pos[2];
           const rd = Math.hypot(rdx, rdz);
           hitter.state = 'recoil';
           hitter.stateTicksLeft = SHADE_RECOIL_TICKS;
           hitter.recoilDir = rd > 1e-6 ? [rdx / rd, rdz / rd] : [1, 0];
+          hitter.targetLanternId = null;
+          hitter.drainTicks = 0;
 
           events.push({
             type: 'event',
@@ -1188,7 +1451,7 @@ export class LanternIslandSim {
       this.spawnOneRandomDrifter();
     }
 
-    // ── STEP 11: Evaluate win/loss (no_flames > all_lit > dawn) ──
+    // ── STEP 11: Evaluate win/loss (Contract v1.2: no_flames ALWAYS first; dawn_survived vs dawn at timeout) ──
     this.evaluateWinLoss(events);
 
     return events;
@@ -1207,31 +1470,69 @@ export class LanternIslandSim {
       return;
     }
 
-    if (this.lanterns.every((l) => l.lit)) {
-      this.state = 'won';
-      this.gameOverReason = 'all_lit';
-      const timeBonus = Math.floor(this.getTimeLeftS()) * TUNING.score.per_second_left;
-      const flameBonus = this.player.flames * TUNING.score.per_flame_left;
-      this.score += timeBonus + flameBonus;
-      events.push({
-        type: 'event',
-        tick: this.tick,
-        name: 'game_over',
-        data: { result: 'won', reason: 'all_lit' },
-      });
-      return;
-    }
-
     if (this.simTick >= this.totalDurationTicks) {
-      this.state = 'lost';
-      this.gameOverReason = 'dawn';
-      events.push({
-        type: 'event',
-        tick: this.tick,
-        name: 'game_over',
-        data: { result: 'lost', reason: 'dawn' },
-      });
+      const litLanterns = this.lanterns.filter((l) => l.lit);
+      const threshold = this.getWinLitThreshold();
+      if (litLanterns.length >= threshold) {
+        this.state = 'won';
+        this.gameOverReason = 'dawn_survived';
+        let lanternBonus = 0;
+        for (const l of litLanterns) {
+          lanternBonus +=
+            TUNING.score.per_dawn_lantern + Math.floor(l.fuelUnits / FUEL_UNITS_PER_POINT);
+        }
+        const flameBonus = this.player.flames * TUNING.score.per_flame_left;
+        this.score += lanternBonus + flameBonus;
+        events.push({
+          type: 'event',
+          tick: this.tick,
+          name: 'game_over',
+          data: { result: 'won', reason: 'dawn_survived' },
+        });
+      } else {
+        this.state = 'lost';
+        this.gameOverReason = 'dawn';
+        events.push({
+          type: 'event',
+          tick: this.tick,
+          name: 'game_over',
+          data: { result: 'lost', reason: 'dawn' },
+        });
+      }
     }
+  }
+
+  private triggerSafeZonePushout(lantern: LanternEntity): void {
+    for (const shade of this.shades) {
+      if (distXZ(shade.pos, lantern.pos) < TUNING.safe_radius) {
+        shade.safePushTicks = SAFE_PUSH_MAX_TICKS;
+        if (shade.state === 'drain') {
+          shade.state = 'wander';
+          shade.targetLanternId = null;
+          shade.drainTicks = 0;
+        }
+      }
+    }
+  }
+
+  private findNearestLantern(
+    origin: Vec3,
+    predicate: (l: LanternEntity) => boolean,
+  ): LanternEntity | null {
+    let best: LanternEntity | null = null;
+    let bestDist = Infinity;
+    for (const l of this.lanterns) {
+      if (!predicate(l)) continue;
+      const d = distXZ(origin, l.pos);
+      if (
+        d < bestDist - 1e-9 ||
+        (Math.abs(d - bestDist) <= 1e-9 && best && compareEntityId(l.id, best.id) < 0)
+      ) {
+        bestDist = d;
+        best = l;
+      }
+    }
+    return best;
   }
 
   private blockShadeOutsideSafeZones(shade: ShadeEntity): void {
@@ -1239,7 +1540,7 @@ export class LanternIslandSim {
     for (let pass = 0; pass < 3; pass++) {
       let pushed = false;
       for (const lantern of this.lanterns) {
-        if (!lantern.lit) continue;
+        if (!this.isLanternSafeActive(lantern)) continue;
         const dx = shade.pos[0] - lantern.pos[0];
         const dz = shade.pos[2] - lantern.pos[2];
         const d = Math.hypot(dx, dz);
@@ -1359,7 +1660,7 @@ export class LanternIslandSim {
     const valid = this.map.shadeSpawnPoints.filter(
       (pt) =>
         distXZ(pt, this.player.pos) >= SHADE_MIN_SPAWN_PLAYER_DIST &&
-        !this.lanterns.some((l) => l.lit && distXZ(pt, l.pos) <= TUNING.safe_radius) &&
+        !this.lanterns.some((l) => this.isLanternSafeActive(l) && distXZ(pt, l.pos) <= TUNING.safe_radius) &&
         !this.shades.some((s) => distXZ(s.pos, pt) < 1.0),
     );
     if (valid.length === 0) return null;
@@ -1374,6 +1675,8 @@ export class LanternIslandSim {
       recoilDir: [1, 0],
       safePushTicks: 0,
       wanderTarget: null,
+      targetLanternId: null,
+      drainTicks: 0,
     };
     this.shades.push(shade);
     return shade;

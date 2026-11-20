@@ -24,8 +24,20 @@ export const PULSE_COOLDOWN_TICKS = 180; // 3.0 s
 
 export const SAFE_PUSH_MAX_TICKS = 30;
 
+// Phase 3: Exact integer 1/60 fuel units (0..6000) to avoid floating-point drift
+export const FUEL_UNITS_PER_POINT = 60;
+export const FUEL_MAX_UNITS = 100 * FUEL_UNITS_PER_POINT; // 6000
+export const FUEL_DECAY_UNITS_PER_TICK = 1; // 1.0 fuel/s
+export const FUEL_DRAIN_UNITS_PER_TICK = 5; // 5.0 fuel/s per draining shade
+export const FUEL_PER_MOTE_UNITS = 10 * FUEL_UNITS_PER_POINT; // 600 (+10 fuel/mote)
+export const LOW_FUEL_UNITS = 30 * FUEL_UNITS_PER_POINT; // 1800 (fuel < 30 loses safe zone)
+export const CAPACITY_STEP_PER_LIGHT = 2;
+
 export const SHADE_DETECT_RADIUS = 12.0;
 export const SHADE_LEASH_RADIUS = 18.0;
+export const SHADE_DRAIN_RADIUS = 2.0;
+export const SHADE_DRAIN_CHASE_RADIUS = 6.0;
+export const SHADE_DRAIN_EVENT_INTERVAL_TICKS = 60;
 export const SHADE_WANDER_SPEED = 2.0;
 export const SHADE_NIGHT3_SPEED = 4.5;
 export const SHADE_HIT_HEIGHT_TOLERANCE = 1.5;
@@ -65,15 +77,23 @@ export const TUNING: TuningConfig = {
   dash_duration_s: 0.2,
   dash_cooldown_s: 1.5,
   carry_capacity: 10,
+  capacity_max: 20,
   lantern_cost: 10,
+  relight_cost: 5,
   lantern_count_night1: 5,
   pickup_radius: 1,
   interact_radius: 2,
   pulse_cost: 3,
   pulse_radius: 5,
-  night1_duration_s: 300,
-  night2_duration_s: 330,
-  night3_duration_s: 360,
+  night1_duration_s: 240,
+  night2_duration_s: 270,
+  night3_duration_s: 300,
+  win_ratio: 0.6,
+  fuel_max: 100,
+  fuel_decay_per_s: 1.0,
+  fuel_per_mote: 10,
+  drain_per_s: 5,
+  low_fuel_threshold: 30,
   flames: 3,
   invuln_s: 1.5,
   hit_drop_ratio: 0.5,
@@ -85,15 +105,17 @@ export const TUNING: TuningConfig = {
   shade_hit_radius: 1,
   fall_enabled: true,
   score: {
-    per_mote: 10,
+    per_mote: 5,
     per_lantern: 100,
+    per_relight: 40,
     per_stun: 5,
-    per_second_left: 2,
+    per_stun_drain: 15,
+    per_dawn_lantern: 50,
     per_flame_left: 50,
   },
 };
 
-/** Standardized Phase 2 color palette (max 10% RGB deviation). */
+/** Standardized color palette (max 10% RGB deviation). */
 export const PALETTE = {
   sky: '#0E1430',
   fog: '#1B2350',
@@ -115,4 +137,10 @@ export const PALETTE = {
   drifter: '#8FA3B8',
   uiDanger: '#FF5A5F',
   uiText: '#F5F1E6',
+} as const;
+
+/** Colorblind-accessible overrides (Phase 3 · Section 6). */
+export const COLORBLIND_PALETTE = {
+  shadeEdge: '#00B3FF',
+  uiDanger: '#FFFFFF',
 } as const;

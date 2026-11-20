@@ -102,7 +102,7 @@ function createNight1Map(): NightMapDef {
     night: 1,
     name: 'Đêm 1 — Đảo Bến',
     introQuote:
-      'Ông Đăng: "Mây ơi, sương đen đã phủ kín Đảo Bến rồi. Hãy gom đom đóm, thắp lại 5 Đèn Lồng Lớn trước khi bình minh tới nhé!"',
+      'Ông Đăng: "Mây ơi, dầu đèn đêm nay cạn nhanh lắm! Hãy giữ ít nhất 3/5 Đèn Lồng Đảo Bến sáng tới bình minh và canh chừng Bóng Mực hút dầu nhé!"',
     durationS: TUNING.night1_duration_s,
     playerSpawn: [0, 0, 0],
     lanterns: [
@@ -160,7 +160,7 @@ function createNight2Map(): NightMapDef {
     night: 2,
     name: 'Đêm 2 — Đảo Cau',
     introQuote:
-      'Ông Đăng: "Đảo Cau có hai bờ nối bằng cầu tre hẹp và hai bục gió. Coi chừng Gió Lạc tinh nghịch thích cướp đom đóm đấy!"',
+      'Ông Đăng: "Đảo Cau có hai bờ nối bằng cầu tre hẹp và hai bục gió. Giữ ít nhất 4/6 đèn sáng tới bình minh và coi chừng Gió Lạc cướp đom đóm!"',
     durationS: TUNING.night2_duration_s,
     playerSpawn: [0, 0, 0],
     lanterns: [
@@ -247,7 +247,7 @@ function createNight3Map(): NightMapDef {
     night: 3,
     name: 'Đêm 3 — Đảo Chuông',
     introQuote:
-      'Ông Đăng: "Đêm cuối cùng trên Đảo Chuông ba tầng! Hãy nương theo gió mạnh, vượt hai con dốc và bục nhảy để thắp sáng ngọn đèn đỉnh tháp!"',
+      'Ông Đăng: "Đêm cuối trên Đảo Chuông ba tầng! Hãy nương gió mạnh, châm dầu kịp thời và giữ tối thiểu 5/7 đèn sáng đến lúc bình minh lên!"',
     durationS: TUNING.night3_duration_s,
     // Center (0,0) is occupied by Tier 2 plateau (r <= 8) and Bell Tower (r <= 2), so spawn on open Tier 0 facing +Z
     playerSpawn: [0, 0, -12],

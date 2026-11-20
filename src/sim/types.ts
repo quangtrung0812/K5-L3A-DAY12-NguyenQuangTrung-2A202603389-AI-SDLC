@@ -4,19 +4,21 @@ export type NightNumber = 1 | 2 | 3;
 
 export type GameState = 'playing' | 'paused' | 'won' | 'lost';
 
-export type ShadeState = 'spawning' | 'wander' | 'chase' | 'recoil' | 'stunned';
+export type ShadeState = 'spawning' | 'wander' | 'chase' | 'recoil' | 'stunned' | 'drain';
 
 export type DrifterState = 'idle' | 'chase' | 'flee' | 'removed';
 
 export type MoteKind = 'random' | 'dropped';
 
-export type GameOverReason = 'all_lit' | 'dawn' | 'no_flames';
+export type GameOverReason = 'dawn_survived' | 'dawn' | 'no_flames';
 
 export interface ScoreTuning {
   per_mote: number;
   per_lantern: number;
+  per_relight: number;
   per_stun: number;
-  per_second_left: number;
+  per_stun_drain: number;
+  per_dawn_lantern: number;
   per_flame_left: number;
 }
 
@@ -26,7 +28,9 @@ export interface TuningConfig {
   dash_duration_s: number;
   dash_cooldown_s: number;
   carry_capacity: number;
+  capacity_max: number;
   lantern_cost: number;
+  relight_cost: number;
   lantern_count_night1: number;
   pickup_radius: number;
   interact_radius: number;
@@ -35,6 +39,12 @@ export interface TuningConfig {
   night1_duration_s: number;
   night2_duration_s: number;
   night3_duration_s: number;
+  win_ratio: number;
+  fuel_max: number;
+  fuel_decay_per_s: number;
+  fuel_per_mote: number;
+  drain_per_s: number;
+  low_fuel_threshold: number;
   flames: number;
   invuln_s: number;
   hit_drop_ratio: number;
@@ -78,6 +88,8 @@ export interface ScenarioLantern {
   pos?: Vec3;
   deposited?: number;
   lit?: boolean;
+  fuel?: number;
+  ever_lit?: boolean;
 }
 
 export interface ScenarioShade {
@@ -85,6 +97,7 @@ export interface ScenarioShade {
   pos: Vec3;
   state?: ShadeState;
   state_ticks_left?: number;
+  target_lantern_id?: string;
 }
 
 export interface ScenarioDrifter {
@@ -118,6 +131,7 @@ export interface ScenarioConfig {
     pos?: Vec3;
     carried?: number;
     flames?: number;
+    successful_lights?: number;
     invuln_ticks?: number;
     dash_cd_ticks?: number;
     pulse_cd_ticks?: number;
@@ -140,6 +154,10 @@ export interface LanternEntity {
   pos: Vec3;
   lit: boolean;
   deposited: number;
+  /** Exact fuel in integer 1/60 units (0..6000); 0 when unlit. */
+  fuelUnits: number;
+  everLit: boolean;
+  relitCount: number;
 }
 
 export interface ShadeEntity {
@@ -152,6 +170,8 @@ export interface ShadeEntity {
   recoilDir: [number, number];
   safePushTicks: number;
   wanderTarget: [number, number] | null;
+  targetLanternId: string | null;
+  drainTicks: number;
 }
 
 export interface DrifterEntity {
@@ -193,6 +213,7 @@ export interface PlayerEntity {
   yawRad: number;
   flames: number;
   carried: number;
+  successfulLights: number;
   invulnTicks: number;
   dashActiveTicks: number;
   dashDir: [number, number];
@@ -222,7 +243,30 @@ export type SimEvent =
       name: 'deposit';
       data: { lantern_id: string; amount: number; deposited: number };
     }
-  | { type: 'event'; tick: number; name: 'lantern_lit'; data: { lantern_id: string } }
+  | {
+      type: 'event';
+      tick: number;
+      name: 'lantern_lit';
+      data: { lantern_id: string; relight: boolean };
+    }
+  | {
+      type: 'event';
+      tick: number;
+      name: 'refuel';
+      data: { lantern_id: string; amount: number; fuel: number };
+    }
+  | {
+      type: 'event';
+      tick: number;
+      name: 'lantern_out';
+      data: { lantern_id: string };
+    }
+  | {
+      type: 'event';
+      tick: number;
+      name: 'fuel_drain';
+      data: { lantern_id: string; shade_id: string; fuel: number };
+    }
   | { type: 'event'; tick: number; name: 'pulse'; data: { stunned_ids: string[] } }
   | {
       type: 'event';
@@ -270,6 +314,7 @@ export interface SnapshotRecord {
     grounded: boolean;
     flames: number;
     carried: number;
+    capacity: number;
     invuln: boolean;
     dash_cd_s: number;
     pulse_cd_s: number;
@@ -280,6 +325,9 @@ export interface SnapshotRecord {
     pos: Vec3;
     lit: boolean;
     deposited: number;
+    fuel: number;
+    ever_lit: boolean;
+    relit_count: number;
   }[];
   shades: {
     id: string;
