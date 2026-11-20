@@ -3,6 +3,7 @@ dist/
 .env
 .env.*
 *.log
-Phase*.md
+/Phase*.md
+/Note.md
 tmp/
 .DS_Store
